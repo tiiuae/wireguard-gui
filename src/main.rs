@@ -1,7 +1,4 @@
-use gtk::prelude::{
-    *, // ButtonExt, GtkWindowExt, ToggleButtonExt, WidgetExt,
-};
-use gtk::Align;
+use gtk::prelude::*;
 use relm4::*;
 
 pub mod components;
@@ -29,14 +26,9 @@ impl SimpleComponent for TunnelsModel {
     view! {
         gtk::Box {
             set_orientation: gtk::Orientation::Horizontal,
-            set_valign: Align::Fill,
-            // set_vexpand: true,
-            // set_hexpand: true,
 
             gtk::Box {
                 set_orientation: gtk::Orientation::Vertical,
-                // set_vexpand: true,
-                // set_hexpand: true,
 
                 gtk::ScrolledWindow {
                     set_vexpand: true,
@@ -50,7 +42,11 @@ impl SimpleComponent for TunnelsModel {
                     set_spacing: 5,
 
                     gtk::Button {
-                        set_label: "Add Tunnel"
+                        set_label: "Add Tunnel",
+                        // connect_clicked => TunnelsOutput::LogEntry("new tunnel added".into()),
+                        connect_clicked[sender] => move |_| {
+                            sender.output(TunnelsOutput::LogEntry("new tunnel were added\n".into())).unwrap()
+                        },
                     },
 
                     gtk::Button {
@@ -61,7 +57,7 @@ impl SimpleComponent for TunnelsModel {
 
                     },
 
-                    gtk::Button::from_icon_name("bin"),
+                    gtk::Button::from_icon_name("edit-delete"),
                 }
             },
 
@@ -187,7 +183,7 @@ struct AppModel {
     mode: AppMode,
     header: Controller<HeaderModel>,
     tunnels: Controller<TunnelsModel>,
-    logs: Controller<LogsModel>
+    logs: Controller<LogsModel>,
 }
 
 #[relm4::component]
@@ -233,13 +229,14 @@ impl SimpleComponent for AppModel {
                     HeaderOutput::Logs => AppMsg::SetMode(AppMode::Logs),
                 });
 
-        let logs = LogsModel::builder().launch(root.width()).detach();
+        let logs = LogsModel::builder().launch(()).detach();
 
         let tunnels = TunnelsModel::builder()
             .launch(())
             .forward(logs.sender(), |msg| {
+                println!("Forwarding string {:#?}", msg);
                 match msg {
-                    TunnelsOutput::LogEntry(s) => LogsInput::LogEntry(s)
+                    TunnelsOutput::LogEntry(s) => LogsInput::LogEntry(s),
                 }
             });
 
@@ -247,7 +244,7 @@ impl SimpleComponent for AppModel {
             mode: params,
             header,
             tunnels,
-            logs
+            logs,
         };
 
         let widgets = view_output!();
