@@ -1,7 +1,8 @@
+use struct_iterable::Iterable;
 use serde::{Serialize, Deserialize};
 
 /// Defines the VPN settings for the local node.
-#[derive(Deserialize, Serialize, Clone, PartialEq, Default, Debug)]
+#[derive(Deserialize, Serialize, Iterable, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct Interface {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -34,7 +35,7 @@ pub struct Interface {
 /// traffic to other peers, or a directly accessible client via
 /// LAN/internet that is not behind a NAT and only routes traffic for
 /// itself.
-#[derive(Deserialize, Serialize, Clone, PartialEq, Default, Debug)]
+#[derive(Deserialize, Serialize, Iterable, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct Peer {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -50,13 +51,13 @@ pub struct Peer {
 
 }
 
-#[derive(Deserialize, Serialize, Clone, PartialEq, Default, Debug)]
+#[derive(Deserialize, Serialize, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct WireguardConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
-    interface: Option<Interface>,
+    pub interface: Option<Interface>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    peer: Option<Peer>,
+    pub peer: Option<Peer>,
 }
 
 pub fn parse_config(s: &str) -> Result<WireguardConfig, serde_ini::de::Error> {

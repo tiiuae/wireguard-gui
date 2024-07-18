@@ -1,13 +1,70 @@
 use std::path::PathBuf;
 
 use gtk::prelude::*;
-use relm4::*;
+use relm4::{
+    prelude::*,
+    typed_view::list::{RelmListItem, TypedListView},
+};
 use relm4_components::open_dialog::*;
+
+use crate::config::*;
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Tunnel {
+    pub name: String,
+    pub config: WireguardConfig,
+    pub active: bool,
+}
+
+impl Tunnel {
+    pub fn new(config: WireguardConfig) -> Self {
+        let cfg = config.clone();
+        let WireguardConfig { interface, peer } = config;
+        Self {
+            active: false,
+            name: interface
+                .and_then(|i| i.name)
+                .or(peer.and_then(|p| p.name))
+                .unwrap_or("unknown".into()),
+            config: cfg,
+        }
+    }
+}
+
+impl Drop for Tunnel {
+    fn drop(&mut self) {
+        // TODO: Disconnect if connected
+    }
+}
+
+// TODO: Add activity indication
+impl RelmListItem for Tunnel {
+    type Root = gtk::Box;
+    // For now let entry be only label with name.
+    type Widgets = gtk::Label;
+
+    fn setup(_item: &gtk::ListItem) -> (gtk::Box, Self::Widgets) {
+        relm4::view! {
+            my_box = gtk::Box {
+                #[name = "label"]
+                gtk::Label,
+            }
+        }
+
+        let widgets = label;
+
+        (my_box, widgets)
+    }
+
+    fn bind(&mut self, widgets: &mut Self::Widgets, _root: &mut Self::Root) {
+        let label = widgets;
+        label.set_label(&self.name);
+    }
+}
 
 pub struct TunnelsModel {
     open_dialog: Controller<OpenDialog>,
-    tunnels: Vec<()>,
-    current_tunnel_idx: usize,
+    tunnel_list_view_wrapper: TypedListView<Tunnel, gtk::SingleSelection>,
 }
 
 #[derive(Debug)]
@@ -35,6 +92,7 @@ impl SimpleComponent for TunnelsModel {
     type Output = TunnelsOutput;
 
     view! {
+        #[root]
         gtk::Box {
             set_orientation: gtk::Orientation::Horizontal,
 
@@ -43,9 +101,9 @@ impl SimpleComponent for TunnelsModel {
 
                 gtk::ScrolledWindow {
                     set_vexpand: true,
-                    gtk::Viewport {
-                        set_child: Some(gtk::ListBox::new()).as_ref(),
-                    }
+
+                    #[local_ref]
+                    tunnels_view -> gtk::ListView {}
                 },
 
                 gtk::Box {
@@ -75,13 +133,20 @@ impl SimpleComponent for TunnelsModel {
             gtk::Box {
                 set_orientation: gtk::Orientation::Vertical,
 
+
                 gtk::Frame::new(Some("Interface:")) {
+                    #[name = "interface_grid"]
                     gtk::Grid {
                         attach[0, 0, 1, 2] = &gtk::Label::new(Some("hello")),
                     }
                 },
 
-                gtk::Frame::new(Some("Peer:")) {},
+                gtk::Frame::new(Some("Peer:")) {
+                    #[name = "peer_grid"]
+                    gtk::Grid {
+
+                    }
+                },
             }
         }
     }
@@ -100,12 +165,18 @@ impl SimpleComponent for TunnelsModel {
                 OpenDialogResponse::Cancel => Self::Input::Ignore,
             });
 
+        let tunnel_list_view_wrapper: TypedListView<Tunnel, gtk::SingleSelection> =
+            TypedListView::with_sorting();
+
         let model = TunnelsModel {
             open_dialog,
-            tunnels: vec![],
-            current_tunnel_idx: 0,
+            tunnel_list_view_wrapper,
         };
+
+        let tunnels_view = &model.tunnel_list_view_wrapper.view;
+
         let widgets = view_output!();
+
         ComponentParts { model, widgets }
     }
 
@@ -113,20 +184,21 @@ impl SimpleComponent for TunnelsModel {
         match msg {
             Self::Input::ImportRequest => self.open_dialog.emit(OpenDialogMsg::Open),
             Self::Input::ImportResponse(path) => {
-                dbg!(path);
-            },
+                // TODO: Show modal window with error.
+                let file_content = std::fs::read_to_string(path);
+                let res = file_content.map(|c| parse_config(&c));
+                let Ok(Ok(config)) = dbg!(res) else {
+                    return;
+                };
+
+                self.tunnel_list_view_wrapper.append(Tunnel::new(config));
+            }
             Self::Input::Ignore => (),
 
             Self::Input::DeleteCurrent => {
-                if self.current_tunnel_idx < self.tunnels.len() {
-                    self.tunnels.remove(self.current_tunnel_idx);
-                    self.current_tunnel_idx = self.current_tunnel_idx.saturating_sub(1);
-
-                }
-            },
-            // Self::Input:: => {
-            //     // self.mode = mode;
-            // }
+                let selected_item = self.tunnel_list_view_wrapper.selection_model.selected();
+                self.tunnel_list_view_wrapper.remove(selected_item);
+            }
         }
     }
 }
