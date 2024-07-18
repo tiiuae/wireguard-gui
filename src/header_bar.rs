@@ -1,6 +1,8 @@
 use gtk::prelude::*;
 use relm4::*;
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub struct HeaderModel;
 
 #[derive(Debug)]
@@ -71,7 +73,7 @@ impl SimpleComponent for HeaderModel {
                         // },
 
                         gtk::Label {
-                            set_label: "Version: 0.1.0",
+                            set_label: &format!("Version: {VERSION}"),
                         },
                     },
                 },
