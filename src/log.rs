@@ -31,7 +31,7 @@ impl Component for LogsModel {
         root: Self::Root,
         _sender: ComponentSender<Self>,
     ) -> relm4::ComponentParts<Self> {
-        let model = LogsModel::default();
+        let model = LogsModel;
 
         let text_view = gtk::TextView::builder()
             .hexpand(true)
