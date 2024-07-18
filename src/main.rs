@@ -1,13 +1,17 @@
 use gtk::prelude::*;
 use relm4::*;
 
+/// Parser and structure that defines accepted Wireguard configuration file format.
+pub mod config;
+/// Screen with logs component.
 pub mod log;
-use log::*;
-
+/// Main tunnels configuration and status screen component.
 pub mod tunnels;
-use tunnels::*;
-
+/// Header bar component.
 pub mod header_bar;
+
+use log::*;
+use tunnels::*;
 use header_bar::*;
 
 #[derive(Debug)]
