@@ -54,8 +54,7 @@ pub struct Peer {
 #[derive(Deserialize, Serialize, Clone, PartialEq, Eq, PartialOrd, Ord, Default, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct WireguardConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub interface: Option<Interface>,
+    pub interface: Interface,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub peer: Option<Peer>,
 }

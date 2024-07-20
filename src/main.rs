@@ -54,6 +54,7 @@ impl SimpleComponent for AppModel {
                 // set_halign: gtk::Align::Fill,
                 set_hexpand: true,
                 set_vexpand: true,
+                #[transition = "SlideLeftRight"]
                 match &model.mode {
                     AppMode::Tunnels => model.tunnels.widget().clone(),
                     AppMode::Logs => model.logs.widget().clone(),
