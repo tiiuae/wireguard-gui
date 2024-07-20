@@ -1,79 +1,18 @@
+use std::fmt;
 use std::path::PathBuf;
 
 use gtk::prelude::*;
 use relm4::{
     prelude::*,
     typed_view::{
-        list::{RelmListItem, TypedListView},
+        list::TypedListView,
         TypedListItem,
     },
 };
 use relm4_components::open_dialog::*;
 
 use crate::config::*;
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
-pub struct Tunnel {
-    pub name: String,
-    pub config: WireguardConfig,
-    pub active: bool,
-}
-
-impl Tunnel {
-    pub fn new(config: WireguardConfig) -> Self {
-        let cfg = config.clone();
-        Self {
-            active: false,
-            name: config.interface.name.unwrap_or("unknown".into()),
-            config: cfg,
-        }
-    }
-
-    /// Toggles activation of a tunnel.
-    ///
-    /// Returns either new state, or error string from the command output.
-    pub fn toggle(&mut self) -> Result<bool, String> {
-        if self.active {
-            self.active = false;
-            Ok(self.active)
-        } else {
-            // TODO: Run command to activate tunnel.
-            todo!();
-            self.active = true;
-        }
-    }
-}
-
-impl Drop for Tunnel {
-    fn drop(&mut self) {
-        // TODO: Disconnect if connected
-    }
-}
-
-// TODO: Add activity indication
-impl RelmListItem for Tunnel {
-    type Root = gtk::Box;
-    // For now let entry be only label with name.
-    type Widgets = gtk::Label;
-
-    fn setup(_item: &gtk::ListItem) -> (gtk::Box, Self::Widgets) {
-        relm4::view! {
-            my_box = gtk::Box {
-                #[name = "label"]
-                gtk::Label,
-            }
-        }
-
-        let widgets = label;
-
-        (my_box, widgets)
-    }
-
-    fn bind(&mut self, widgets: &mut Self::Widgets, _root: &mut Self::Root) {
-        let label = widgets;
-        label.set_label(&self.name);
-    }
-}
+use crate::tunnel::*;
 
 pub struct TunnelsModel {
     open_dialog: Controller<OpenDialog>,
@@ -94,18 +33,37 @@ pub enum TunnelsOutput {
 }
 
 /// Actions on tunnels list.
-#[derive(Debug)]
+// #[derive(Debug)]
 pub enum TunnelsInput {
     // Dialog actions
     ImportRequest,
     ImportResponse(PathBuf),
     Ignore,
 
+    SetCurrentTunnel(Box<dyn FnOnce(&mut Tunnel)>),
     // Message with index of selected item
     UpdateCurrentShowedTunnel(u32),
 
     /// Delete currently selected tunnel configuration.
     DeleteCurrent,
+}
+
+impl fmt::Debug for TunnelsInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TunnelsInput::ImportRequest => f.write_str("ImportRequest"),
+            TunnelsInput::ImportResponse(path) => {
+                f.debug_tuple("ImportResponse").field(path).finish()
+            }
+            TunnelsInput::Ignore => f.write_str("Ignore"),
+            TunnelsInput::SetCurrentTunnel(_) => f.write_str("SetCurrentTunnel(<fn>)"),
+            TunnelsInput::UpdateCurrentShowedTunnel(idx) => f
+                .debug_tuple("UpdateCurrentShowedTunnel")
+                .field(idx)
+                .finish(),
+            TunnelsInput::DeleteCurrent => f.write_str("DeleteCurrent"),
+        }
+    }
 }
 
 #[relm4::component(pub)]
@@ -167,19 +125,25 @@ impl SimpleComponent for TunnelsModel {
                         #[name = "interface_name_label"]
                         attach[1, 0, 1, 1] = &gtk::EditableLabel {
                             connect_changed[sender] => move |l| {
+                                let new = l.text().into();
+                                sender.input(Self::Input::SetCurrentTunnel(Box::new(|t| {
+                                    t.name = new;
+                                })))
+                                // SetCurrentTunnel
+                                // dbg!(l.text());
                                 // TODO: Update state
                                 // l.
                                 // &model.selected();
                             },
-                            // #[watch]
-                            // set_label: {
-                            //     model
-                            //         .selected()
-                            //         .map(|x| x.borrow().config.interface.name.clone())
-                            //         .flatten()
-                            //         .unwrap_or("unknown".into())
-                            //         .as_str()
-                            // },
+                            #[watch]
+                            set_text: {
+                                model
+                                    .selected()
+                                    .map(|x| x.borrow().config.interface.name.clone())
+                                    .flatten()
+                                    .unwrap_or("unknown".into())
+                                    .as_str()
+                            },
                         },
 
                         attach[0, 1, 1, 1] = &gtk::Label::new(Some("Address:")),
@@ -293,6 +257,14 @@ impl SimpleComponent for TunnelsModel {
                 self.tunnel_list_view_wrapper.append(Tunnel::new(config));
             }
             Self::Input::Ignore => (),
+
+            Self::Input::SetCurrentTunnel(f) => {
+                let Some(item) = self.selected() else {
+                    return;
+                };
+                let mut it = item.borrow_mut();
+                f(&mut it);
+            }
 
             Self::Input::UpdateCurrentShowedTunnel(idx) => {
                 let Some(item) = self.tunnel_list_view_wrapper.get(idx) else {
