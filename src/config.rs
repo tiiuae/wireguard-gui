@@ -47,14 +47,18 @@ pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
         .enumerate()
         .filter(|(_, l)| !l.is_empty())
         .map(|(i, l)| {
-            if l.starts_with("[") && l.ends_with("]") {
-                Ok(LineType::Section(l[1..l.len()-1].trim().into()))
+            if l.starts_with('[') && l.ends_with(']') {
+                Ok(LineType::Section(l[1..l.len() - 1].trim().into()))
             } else if let Some(pos) = l.chars().position(|c| c == '=') {
-                Ok(LineType::Attribute(l[0..pos].trim().into(), l[pos+1..l.len()].trim().into()))
+                Ok(LineType::Attribute(
+                    l[0..pos].trim().into(),
+                    l[pos + 1..l.len()].trim().into(),
+                ))
             } else {
                 Err(format!("Couldn't parse line {}: `{}`", i + 1, l.trim()))
             }
-        }).collect::<Result<Vec<LineType>, String>>()?;
+        })
+        .collect::<Result<Vec<LineType>, String>>()?;
 
     let mut cfg = WireguardConfig::default();
 
@@ -68,18 +72,16 @@ pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
 
     while let Some(l) = it.next() {
         match l {
-            LineType::Section(s) => {
-                match s.as_str() {
-                    "Interface" => {
-                        is_in_interface = true;
-                        is_in_peer = false;
-                    },
-                    "Peer" => {
-                        is_in_interface = false;
-                        is_in_peer = true;
-                    },
-                    i => return Err(format!("Unexpected interface name {}.", i)),
+            LineType::Section(s) => match s.as_str() {
+                "Interface" => {
+                    is_in_interface = true;
+                    is_in_peer = false;
                 }
+                "Peer" => {
+                    is_in_interface = false;
+                    is_in_peer = true;
+                }
+                i => return Err(format!("Unexpected interface name {}.", i)),
             },
             LineType::Attribute(key, value) => {
                 if is_in_interface {
@@ -95,7 +97,7 @@ pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
                         "PostUp" => cfg.interface.post_up = Some(value),
                         "PreDown" => cfg.interface.pre_down = Some(value),
                         "PostDown" => cfg.interface.post_down = Some(value),
-                        k => return Err(format!("Unexpected Interface configuration key {}.", k))
+                        k => return Err(format!("Unexpected Interface configuration key {}.", k)),
                     }
                 } else if is_in_peer {
                     match key.as_str() {
@@ -104,23 +106,23 @@ pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
                         "Endpoint" => tmp_peer.endpoint = Some(value),
                         "PublicKey" => tmp_peer.public_key = Some(value),
                         "PersistentKeepalive" => tmp_peer.persistent_keepalive = Some(value),
-                        k => return Err(format!("Unexpected Peer configuration key {}.", k))
+                        k => return Err(format!("Unexpected Peer configuration key {}.", k)),
                     };
 
                     match it.peek() {
                         Some(LineType::Section(_)) => {
                             cfg.peers.push(tmp_peer.clone());
                             tmp_peer = Peer::default();
-                        },
+                        }
                         None => {
                             cfg.peers.push(tmp_peer.clone());
-                        },
+                        }
                         _ => (),
                     }
                 } else {
                     return Err(format!("Unexpected attribute {}.", key));
                 }
-            },
+            }
         }
     }
 
@@ -144,13 +146,11 @@ pub fn write_config(c: &WireguardConfig) -> String {
         c.interface.post_down.clone().map(|v| ("PostDown", v)),
     ];
 
-    for kv in kvs {
-        if let Some((key, value)) = kv {
-            res.push_str(key);
-            res.push_str(" = ");
-            res.push_str(value.as_str());
-            res.push('\n');
-        }
+    for (key, value) in kvs.into_iter().flatten() {
+        res.push_str(key);
+        res.push_str(" = ");
+        res.push_str(value.as_str());
+        res.push('\n');
     }
     res.push('\n');
 
@@ -162,16 +162,16 @@ pub fn write_config(c: &WireguardConfig) -> String {
             peer.allowed_ips.clone().map(|v| ("AllowedIPs", v)),
             peer.endpoint.clone().map(|v| ("Endpoint", v)),
             peer.public_key.clone().map(|v| ("PublicKey", v)),
-            peer.persistent_keepalive.clone().map(|v| ("PersistentKeepalive", v))
+            peer.persistent_keepalive
+                .clone()
+                .map(|v| ("PersistentKeepalive", v)),
         ];
 
-        for kv in kvs {
-            if let Some((key, value)) = kv {
-                res.push_str(key);
-                res.push_str(" = ");
-                res.push_str(value.as_str());
-                res.push('\n');
-            }
+        for (key, value) in kvs.into_iter().flatten() {
+            res.push_str(key);
+            res.push_str(" = ");
+            res.push_str(value.as_str());
+            res.push('\n');
         }
         res.push('\n');
     }
