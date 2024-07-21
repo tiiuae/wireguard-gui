@@ -6,22 +6,27 @@ use relm4::prelude::*;
 use relm4_components::open_button::{OpenButton, OpenButtonSettings};
 use relm4_components::open_dialog::OpenDialogSettings;
 
-use wireguard_gui::config::*;
-use wireguard_gui::tunnel::*;
+use wireguard_gui::{config::*, overview::*, tunnel::*};
 
 struct App {
     tunnels: FactoryVecDeque<Tunnel>,
 
     import_button: Controller<OpenButton>,
+
+    overview: Controller<OverviewModel>,
 }
 
 #[derive(Debug)]
 enum AppMsg {
+    ShowOverview(u32),
     AddTunnel(Box<WireguardConfig>),
     RemoveTunnel(DynamicIndex),
     ImportTunnel(PathBuf),
     ExportTunnel,
-    SaveTunnel,
+    SaveTunnelInitiate,
+    SaveTunnelFinish(Tunnel),
+    // Generate keypair, assign it to tunnel and show new tunnel.
+    GenerateKeypair,
     Error(String),
 }
 
@@ -43,7 +48,7 @@ impl SimpleComponent for App {
 
                 attach[0, 0, 1, 1] = &gtk::ScrolledWindow {
                     set_vexpand: true,
-                    // set_hexpand: true,
+
 
                     #[local_ref]
                     tunnels_list_box -> gtk::ListBox {}
@@ -63,6 +68,11 @@ impl SimpleComponent for App {
                 attach[1, 0, 1, 1] = &gtk::Box {
                     set_vexpand: true,
                     set_hexpand: true,
+
+                    // TODO: Just set property
+                    match () {
+                        () => model.overview.widget().clone(),
+                    },
                 },
 
                 attach[1, 1, 1, 1] = &gtk::CenterBox {
@@ -70,7 +80,7 @@ impl SimpleComponent for App {
                     set_end_widget = &gtk::Box {
                         gtk::Button {
                             set_label: "Save",
-                            connect_clicked => Self::Input::SaveTunnel,
+                            connect_clicked => Self::Input::SaveTunnelInitiate,
                         },
 
                         gtk::Button {
@@ -88,6 +98,7 @@ impl SimpleComponent for App {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        // TODO: Emit ShowOverview on selection
         let tunnels = FactoryVecDeque::builder()
             .launch(gtk::ListBox::default())
             .forward(sender.input_sender(), |output| match output {
@@ -116,12 +127,28 @@ impl SimpleComponent for App {
             })
             .forward(sender.input_sender(), Self::Input::ImportTunnel);
 
+        let overview = OverviewModel::builder()
+            .launch(Tunnel::new(WireguardConfig::default()))
+            .forward(sender.input_sender(), |msg| match msg {
+                OverviewOutput::GenerateKeypair => AppMsg::GenerateKeypair,
+                OverviewOutput::SaveTunnel(tunnel) => AppMsg::SaveTunnelFinish(tunnel),
+            });
+
         let model = App {
             tunnels,
             import_button,
+            overview,
         };
 
         let tunnels_list_box = model.tunnels.widget();
+
+        tunnels_list_box.connect_row_selected(
+            gtk::glib::clone!(@strong sender => move |_, row| {
+                if let Some(lbr) = row {
+                    sender.input_sender().emit(AppMsg::ShowOverview(lbr.index().try_into().unwrap()));
+                }
+            }),
+        );
 
         let widgets = view_output!();
 
@@ -130,6 +157,9 @@ impl SimpleComponent for App {
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
         match msg {
+            Self::Input::ShowOverview(idx) => {
+                dbg!(idx);
+            }
             Self::Input::AddTunnel(config) => {
                 let mut tunnels = self.tunnels.guard();
                 tunnels.push_back(*config);
@@ -151,7 +181,13 @@ impl SimpleComponent for App {
                 sender.input(Self::Input::AddTunnel(Box::new(config)));
             }
             Self::Input::ExportTunnel => todo!(),
-            Self::Input::SaveTunnel => todo!(),
+            Self::Input::SaveTunnelInitiate => {
+                self.overview.emit(OverviewInput::CollectTunnel)
+            },
+            Self::Input::SaveTunnelFinish(_tunnel) => {
+                todo!("Get selected tunnel (if there's some) and replace it with new tunnel")
+            },
+            Self::Input::GenerateKeypair => todo!(),
             Self::Input::Error(msg) => {
                 // TODO: Emit modal window on error
                 dbg!(msg);
