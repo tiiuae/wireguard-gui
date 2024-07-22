@@ -3,7 +3,7 @@ use relm4::prelude::*;
 
 use crate::config::*;
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Default, Clone)]
 pub struct Tunnel {
     pub name: String,
     pub config: WireguardConfig,

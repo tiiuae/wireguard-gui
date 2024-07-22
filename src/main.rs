@@ -23,8 +23,8 @@ enum AppMsg {
     RemoveTunnel(DynamicIndex),
     ImportTunnel(PathBuf),
     ExportTunnel,
-    SaveTunnelInitiate,
-    SaveTunnelFinish(Tunnel),
+    SaveConfigInitiate,
+    SaveConfigFinish(WireguardConfig),
     // Generate keypair, assign it to tunnel and show new tunnel.
     GenerateKeypair,
     Error(String),
@@ -80,7 +80,7 @@ impl SimpleComponent for App {
                     set_end_widget = &gtk::Box {
                         gtk::Button {
                             set_label: "Save",
-                            connect_clicked => Self::Input::SaveTunnelInitiate,
+                            connect_clicked => Self::Input::SaveConfigInitiate,
                         },
 
                         gtk::Button {
@@ -128,10 +128,10 @@ impl SimpleComponent for App {
             .forward(sender.input_sender(), Self::Input::ImportTunnel);
 
         let overview = OverviewModel::builder()
-            .launch(Tunnel::new(WireguardConfig::default()))
+            .launch(WireguardConfig::default())
             .forward(sender.input_sender(), |msg| match msg {
                 OverviewOutput::GenerateKeypair => AppMsg::GenerateKeypair,
-                OverviewOutput::SaveTunnel(tunnel) => AppMsg::SaveTunnelFinish(tunnel),
+                OverviewOutput::SaveConfig(config) => AppMsg::SaveConfigFinish(config),
             });
 
         let model = App {
@@ -158,7 +158,9 @@ impl SimpleComponent for App {
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
         match msg {
             Self::Input::ShowOverview(idx) => {
-                dbg!(idx);
+                // dbg!(idx);
+                let tunnel = self.tunnels.get(idx as usize).unwrap();
+                self.overview.emit(OverviewInput::ShowConfig(tunnel.config.clone()));
             }
             Self::Input::AddTunnel(config) => {
                 let mut tunnels = self.tunnels.guard();
@@ -181,10 +183,10 @@ impl SimpleComponent for App {
                 sender.input(Self::Input::AddTunnel(Box::new(config)));
             }
             Self::Input::ExportTunnel => todo!(),
-            Self::Input::SaveTunnelInitiate => {
+            Self::Input::SaveConfigInitiate => {
                 self.overview.emit(OverviewInput::CollectTunnel)
             },
-            Self::Input::SaveTunnelFinish(_tunnel) => {
+            Self::Input::SaveConfigFinish(_tunnel) => {
                 todo!("Get selected tunnel (if there's some) and replace it with new tunnel")
             },
             Self::Input::GenerateKeypair => todo!(),

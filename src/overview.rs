@@ -1,43 +1,45 @@
 // use gtk::prelude::*;
 use relm4::prelude::*;
 
-use crate::tunnel::Tunnel;
+use crate::config::WireguardConfig;
 
 pub struct OverviewModel {
-    tunnel: Tunnel,
+    config: WireguardConfig,
 }
 
 #[derive(Debug)]
 pub enum OverviewInput {
     CollectTunnel,
-    ShowTunnel(Tunnel),
+    ShowConfig(WireguardConfig),
 }
 
 #[derive(Debug)]
 pub enum OverviewOutput {
     GenerateKeypair,
-    SaveTunnel(Tunnel),
+    SaveConfig(WireguardConfig),
 }
 
 #[relm4::component(pub)]
 impl SimpleComponent for OverviewModel {
-    type Init = Tunnel;
+    type Init = WireguardConfig;
     type Input = OverviewInput;
     type Output = OverviewOutput;
 
     view! {
         gtk::Box {
+            gtk::Frame::new(Some("hi")) {
 
+            }
         }
     }
 
     fn init(
-        tunnel: Self::Init,
+        config: Self::Init,
         root: Self::Root,
         _sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
         let model = Self {
-            tunnel
+            config
         };
 
         let widgets = view_output!();
@@ -48,8 +50,8 @@ impl SimpleComponent for OverviewModel {
     fn update(&mut self, msg: Self::Input, _sender: ComponentSender<Self>) {
         match msg {
             Self::Input::CollectTunnel => todo!(),
-            Self::Input::ShowTunnel(tunnel) => {
-                self.tunnel = tunnel;
+            Self::Input::ShowConfig(config) => {
+                self.config = dbg!(config);
             },
         }
     }
