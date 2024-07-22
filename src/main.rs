@@ -24,7 +24,8 @@ enum AppMsg {
     ImportTunnel(PathBuf),
     ExportTunnel,
     SaveConfigInitiate,
-    SaveConfigFinish(WireguardConfig),
+    SaveConfigFinish(Box<WireguardConfig>),
+    AddPeer,
     // Generate keypair, assign it to tunnel and show new tunnel.
     GenerateKeypair,
     Error(String),
@@ -48,7 +49,6 @@ impl SimpleComponent for App {
 
                 attach[0, 0, 1, 1] = &gtk::ScrolledWindow {
                     set_vexpand: true,
-
 
                     #[local_ref]
                     tunnels_list_box -> gtk::ListBox {}
@@ -86,6 +86,11 @@ impl SimpleComponent for App {
                         gtk::Button {
                             set_label: "Export",
                             connect_clicked => Self::Input::ExportTunnel,
+                        },
+
+                        gtk::Button {
+                            set_label: "Add Peer",
+                            connect_clicked => Self::Input::AddPeer,
                         },
                     }
                 }
@@ -160,7 +165,7 @@ impl SimpleComponent for App {
             Self::Input::ShowOverview(idx) => {
                 // dbg!(idx);
                 let tunnel = self.tunnels.get(idx as usize).unwrap();
-                self.overview.emit(OverviewInput::ShowConfig(tunnel.config.clone()));
+                self.overview.emit(OverviewInput::ShowConfig(Box::new(tunnel.config.clone())));
             }
             Self::Input::AddTunnel(config) => {
                 let mut tunnels = self.tunnels.guard();
@@ -169,6 +174,7 @@ impl SimpleComponent for App {
             Self::Input::RemoveTunnel(idx) => {
                 let mut tunnels = self.tunnels.guard();
                 // self.tunnels.widget.selection
+
                 tunnels.remove(idx.current_index());
             }
             Self::Input::ImportTunnel(path) => {
@@ -189,6 +195,9 @@ impl SimpleComponent for App {
             Self::Input::SaveConfigFinish(_tunnel) => {
                 todo!("Get selected tunnel (if there's some) and replace it with new tunnel")
             },
+            Self::Input::AddPeer => {
+                self.overview.emit(OverviewInput::AddPeer);
+            }
             Self::Input::GenerateKeypair => todo!(),
             Self::Input::Error(msg) => {
                 // TODO: Emit modal window on error

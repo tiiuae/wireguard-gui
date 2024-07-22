@@ -28,7 +28,6 @@ impl Tunnel {
 #[derive(Debug)]
 pub enum TunnelMsg {
     Toggle,
-    AddPeer,
 }
 
 #[derive(Debug)]
@@ -78,7 +77,6 @@ impl FactoryComponent for Tunnel {
                 self.toggle();
                 self.active = !self.active;
             },
-            Self::Input::AddPeer => todo!(),
         }
     }
 }

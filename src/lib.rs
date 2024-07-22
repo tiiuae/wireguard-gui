@@ -3,5 +3,7 @@
 pub mod config;
 /// Tunnel - list item.
 pub mod tunnel;
+/// Peers factory.
+pub mod peer;
 /// Overview of tunnel configuration.
 pub mod overview;
