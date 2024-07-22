@@ -75,10 +75,7 @@ impl SimpleComponent for OverviewModel {
                     #[name = "name"]
                     attach[1, 0, 1, 1] = &gtk::EditableLabel {
                         #[watch]
-                        set_text: match model.interface.name {
-                            Some(ref s) => s.as_str(),
-                            None => "unknown",
-                        },
+                        set_text: get_value(&model.interface.name),
                         connect_editing_notify[sender] => move |l| {
                             if !l.is_editing() {
                                 let new: String = l.text().trim().into();
@@ -94,7 +91,7 @@ impl SimpleComponent for OverviewModel {
                     #[name = "address"]
                     attach[1, 1, 1, 1] = &gtk::EditableLabel {
                         #[watch]
-                        set_text: &model.interface.address.clone().unwrap_or("unknown".into()),
+                        set_text: get_value(&model.interface.address),
                         connect_editing_notify[sender] => move |l| {
                             if !l.is_editing() {
                                 let new: String = l.text().trim().into();
@@ -110,7 +107,7 @@ impl SimpleComponent for OverviewModel {
                     #[name = "listen_port"]
                     attach[1, 2, 1, 1] = &gtk::EditableLabel {
                         #[watch]
-                        set_text: &model.interface.listen_port.clone().unwrap_or("unknown".into()),
+                        set_text: get_value(&model.interface.listen_port),
                         connect_editing_notify[sender] => move |l| {
                             if !l.is_editing() {
                                 let new: String = l.text().trim().into();
@@ -127,7 +124,7 @@ impl SimpleComponent for OverviewModel {
                     #[name = "private_key"]
                     attach[1, 3, 1, 1] = &gtk::EditableLabel {
                         #[watch]
-                        set_text: &model.interface.private_key.clone().unwrap_or("unknown".into()),
+                        set_text: get_value(&model.interface.private_key),
                         connect_editing_notify[sender] => move |l| {
                             if !l.is_editing() {
                                 let new: String = l.text().trim().into();
@@ -143,7 +140,7 @@ impl SimpleComponent for OverviewModel {
                     #[name = "dns"]
                     attach[1, 4, 1, 1] = &gtk::EditableLabel {
                         #[watch]
-                        set_text: &model.interface.dns.clone().unwrap_or("unknown".into()),
+                        set_text: get_value(&model.interface.dns),
                         connect_editing_notify[sender] => move |l| {
                             if !l.is_editing() {
                                 let new: String = l.text().trim().into();
@@ -159,7 +156,7 @@ impl SimpleComponent for OverviewModel {
                     #[name = "table"]
                     attach[1, 5, 1, 1] = &gtk::EditableLabel {
                         #[watch]
-                        set_text: &model.interface.table.clone().unwrap_or("unknown".into()),
+                        set_text: get_value(&model.interface.table),
                         connect_editing_notify[sender] => move |l| {
                             if !l.is_editing() {
                                 let new: String = l.text().trim().into();
@@ -175,7 +172,7 @@ impl SimpleComponent for OverviewModel {
                     #[name = "mtu"]
                     attach[1, 6, 1, 1] = &gtk::EditableLabel {
                         #[watch]
-                        set_text: &model.interface.mtu.clone().unwrap_or("unknown".into()),
+                        set_text: get_value(&model.interface.mtu),
                         connect_editing_notify[sender] => move |l| {
                             if !l.is_editing() {
                                 let new: String = l.text().trim().into();
@@ -191,7 +188,7 @@ impl SimpleComponent for OverviewModel {
                     #[name = "pre_up"]
                     attach[1, 7, 1, 1] = &gtk::EditableLabel {
                         #[watch]
-                        set_text: &model.interface.pre_up.clone().unwrap_or("unknown".into()),
+                        set_text: get_value(&model.interface.pre_up),
                         connect_editing_notify[sender] => move |l| {
                             if !l.is_editing() {
                                 let new: String = l.text().trim().into();
@@ -207,7 +204,7 @@ impl SimpleComponent for OverviewModel {
                     #[name = "post_up"]
                     attach[1, 8, 1, 1] = &gtk::EditableLabel {
                         #[watch]
-                        set_text: &model.interface.post_up.clone().unwrap_or("unknown".into()),
+                        set_text: get_value(&model.interface.post_up),
                         connect_editing_notify[sender] => move |l| {
                             if !l.is_editing() {
                                 let new: String = l.text().trim().into();
@@ -223,7 +220,7 @@ impl SimpleComponent for OverviewModel {
                     #[name = "pre_down"]
                     attach[1, 9, 1, 1] = &gtk::EditableLabel {
                         #[watch]
-                        set_text: &model.interface.pre_down.clone().unwrap_or("unknown".into()),
+                        set_text: get_value(&model.interface.pre_down),
                         connect_editing_notify[sender] => move |l| {
                             if !l.is_editing() {
                                 let new: String = l.text().trim().into();
@@ -239,7 +236,7 @@ impl SimpleComponent for OverviewModel {
                     #[name = "post_down"]
                     attach[1, 10, 1, 1] = &gtk::EditableLabel {
                         #[watch]
-                        set_text: &model.interface.post_down.clone().unwrap_or("unknown".into()),
+                        set_text: get_value(&model.interface.post_down),
                         connect_editing_notify[sender] => move |l| {
                             if !l.is_editing() {
                                 let new: String = l.text().trim().into();

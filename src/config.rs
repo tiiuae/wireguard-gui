@@ -179,6 +179,13 @@ pub fn write_config(c: &WireguardConfig) -> String {
     res
 }
 
+pub fn get_value(f: &Option<String>) -> &str {
+    match f {
+        Some(v) => v,
+        None => "unknown"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
