@@ -41,6 +41,7 @@ impl SimpleComponent for App {
             set_title: Some("Wireguard"),
             set_default_size: (480, 340),
 
+            // TODO: Replacing with panes (https://docs.gtk.org/gtk4/class.Paned.html)
             gtk::Grid {
                 set_row_spacing: 5,
                 set_column_spacing: 5,
