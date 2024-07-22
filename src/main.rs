@@ -10,15 +10,14 @@ use wireguard_gui::{config::*, overview::*, tunnel::*};
 
 struct App {
     tunnels: FactoryVecDeque<Tunnel>,
-
+    selected_tunnel_idx: Option<usize>,
     import_button: Controller<OpenButton>,
-
     overview: Controller<OverviewModel>,
 }
 
 #[derive(Debug)]
 enum AppMsg {
-    ShowOverview(u32),
+    ShowOverview(usize),
     AddTunnel(Box<WireguardConfig>),
     RemoveTunnel(DynamicIndex),
     ImportTunnel(PathBuf),
@@ -141,6 +140,7 @@ impl SimpleComponent for App {
 
         let model = App {
             tunnels,
+            selected_tunnel_idx: None,
             import_button,
             overview,
         };
@@ -163,8 +163,8 @@ impl SimpleComponent for App {
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
         match msg {
             Self::Input::ShowOverview(idx) => {
-                // dbg!(idx);
-                let tunnel = self.tunnels.get(idx as usize).unwrap();
+                self.selected_tunnel_idx = Some(idx);
+                let tunnel = self.tunnels.get(idx).unwrap();
                 self.overview.emit(OverviewInput::ShowConfig(Box::new(tunnel.config.clone())));
             }
             Self::Input::AddTunnel(config) => {
@@ -174,7 +174,6 @@ impl SimpleComponent for App {
             Self::Input::RemoveTunnel(idx) => {
                 let mut tunnels = self.tunnels.guard();
                 // self.tunnels.widget.selection
-
                 tunnels.remove(idx.current_index());
             }
             Self::Input::ImportTunnel(path) => {
@@ -192,8 +191,11 @@ impl SimpleComponent for App {
             Self::Input::SaveConfigInitiate => {
                 self.overview.emit(OverviewInput::CollectTunnel)
             },
-            Self::Input::SaveConfigFinish(_tunnel) => {
-                todo!("Get selected tunnel (if there's some) and replace it with new tunnel")
+            Self::Input::SaveConfigFinish(tunnel) => {
+                let Some(idx) = self.selected_tunnel_idx else {return;};
+                if let Some(selected_tunnel) = self.tunnels.guard().get_mut(idx) {
+                    *selected_tunnel = Tunnel::new(*tunnel);
+                }
             },
             Self::Input::AddPeer => {
                 self.overview.emit(OverviewInput::AddPeer);

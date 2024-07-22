@@ -7,7 +7,7 @@ use crate::config::*;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Default, Clone)]
 pub struct PeerComp {
-    peer: Peer,
+    pub peer: Peer,
 }
 
 impl PeerComp {

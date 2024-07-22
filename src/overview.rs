@@ -75,9 +75,15 @@ impl SimpleComponent for OverviewModel {
         ComponentParts { model, widgets }
     }
 
-    fn update(&mut self, msg: Self::Input, _sender: ComponentSender<Self>) {
+    fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
         match msg {
-            Self::Input::CollectTunnel => todo!(),
+            Self::Input::CollectTunnel => {
+                let cfg = WireguardConfig {
+                    interface: self.interface.clone(),
+                    peers: self.peers.iter().map(|p| p.peer.clone()).collect()
+                };
+                sender.output_sender().emit(Self::Output::SaveConfig(Box::new(cfg)));
+            },
             Self::Input::ShowConfig(config) => {
                 let WireguardConfig { interface, peers } = *config;
                 self.interface = interface;
