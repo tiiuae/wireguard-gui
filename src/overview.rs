@@ -297,7 +297,7 @@ impl SimpleComponent for OverviewModel {
             },
             Self::Input::SetInterface(kind, value) => {
                 match kind {
-                    InterfaceSetKind::Name => self.interface.name = dbg!(value),
+                    InterfaceSetKind::Name => self.interface.name = value,
                     InterfaceSetKind::Address => self.interface.address = value,
                     InterfaceSetKind::ListenPort => self.interface.listen_port = value,
                     InterfaceSetKind::PrivateKey => self.interface.private_key = value,

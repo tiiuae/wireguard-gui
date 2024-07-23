@@ -177,13 +177,18 @@ impl SimpleComponent for App {
                 tunnels.remove(idx.current_index());
             }
             Self::Input::ImportTunnel(path) => {
-                let file_content = std::fs::read_to_string(path);
+
+                let file_content = std::fs::read_to_string(&path);
                 let res = file_content.map(|c| parse_config(&c));
 
-                let Ok(Ok(config)) = res else {
+                let Ok(Ok(mut config)) = res else {
                     sender.input(Self::Input::Error(format!("{:#?}", res)));
                     return;
                 };
+
+                if config.interface.name.is_none() {
+                    config.interface.name = path.file_stem().unwrap_or_else(|| todo!()).to_str().map(|s| s.to_owned());
+                }
 
                 sender.input(Self::Input::AddTunnel(Box::new(config)));
             }
