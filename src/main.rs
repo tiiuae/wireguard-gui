@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use nix::unistd::Uid;
 use gtk::prelude::*;
 use relm4::factory::{DynamicIndex, FactoryVecDeque};
 use relm4::prelude::*;
@@ -217,6 +218,10 @@ impl SimpleComponent for App {
 }
 
 fn main() {
+    if !Uid::effective().is_root() {
+        panic!("You must run this executable with root permissions");
+    }
+
     let app = RelmApp::new("relm4.ghaf.wireguard-gui");
     app.run::<App>(());
 }

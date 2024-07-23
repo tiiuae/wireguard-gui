@@ -1,4 +1,4 @@
-use std::{fs, io};
+use std::{fs, io, process::Command};
 
 use gtk::prelude::*;
 use relm4::prelude::*;
@@ -35,7 +35,26 @@ impl Tunnel {
 
     /// Toggle actual interface using wireguard-tools.
     pub fn toggle(&mut self) -> Result<(), io::Error> {
-        // TODO
+        let dir = tempfile::tempdir()?;
+
+        let config_path = dir.path().join(format!("{}.conf", self.name));
+
+        fs::write(&config_path, write_config(&self.config))?;
+
+        let mut proc;
+
+        if self.active {
+            proc = Command::new("wg-quick")
+                .args(["up", config_path.to_str().unwrap()])
+                .spawn()?;
+        } else {
+            proc = Command::new("wg-quick")
+                .args(["down", config_path.to_str().unwrap()])
+                .spawn()?;
+        }
+
+        proc.wait()?;
+
         Ok(())
     }
 }
@@ -83,13 +102,14 @@ impl FactoryComponent for Tunnel {
         Self::new(config)
     }
 
-    fn update(&mut self, msg: Self::Input, _sender: relm4::FactorySender<Self>) {
+    fn update(&mut self, msg: Self::Input, sender: relm4::FactorySender<Self>) {
         match msg {
-            Self::Input::Toggle => {
-                // TODO
-                let _ = self.toggle();
-                self.active = !self.active;
-            }
+            Self::Input::Toggle => match self.toggle() {
+                Ok(_) => self.active = !self.active,
+                Err(err) => sender
+                    .output_sender()
+                    .emit(Self::Output::Error(err.to_string())),
+            },
         }
     }
 }
