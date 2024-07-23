@@ -41,19 +41,13 @@ impl Tunnel {
 
         fs::write(&config_path, write_config(&self.config))?;
 
-        let mut proc;
-
-        if self.active {
-            proc = Command::new("wg-quick")
-                .args(["up", config_path.to_str().unwrap()])
-                .spawn()?;
-        } else {
-            proc = Command::new("wg-quick")
-                .args(["down", config_path.to_str().unwrap()])
-                .spawn()?;
-        }
-
-        proc.wait()?;
+        Command::new("wg-quick")
+            .args([
+                if self.active { "up" } else { "down" },
+                config_path.to_str().unwrap(),
+            ])
+            .spawn()?
+            .wait()?;
 
         Ok(())
     }
