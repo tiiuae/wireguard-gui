@@ -147,13 +147,11 @@ impl SimpleComponent for App {
 
         let tunnels_list_box = model.tunnels.widget();
 
-        tunnels_list_box.connect_row_selected(
-            gtk::glib::clone!(@strong sender => move |_, row| {
-                if let Some(lbr) = row {
-                    sender.input_sender().emit(AppMsg::ShowOverview(lbr.index().try_into().unwrap()));
-                }
-            }),
-        );
+        tunnels_list_box.connect_row_selected(gtk::glib::clone!(@strong sender => move |_, row| {
+            if let Some(lbr) = row {
+                sender.input_sender().emit(AppMsg::ShowOverview(lbr.index().try_into().unwrap()));
+            }
+        }));
 
         let widgets = view_output!();
 
@@ -165,7 +163,8 @@ impl SimpleComponent for App {
             Self::Input::ShowOverview(idx) => {
                 self.selected_tunnel_idx = Some(idx);
                 let tunnel = self.tunnels.get(idx).unwrap();
-                self.overview.emit(OverviewInput::ShowConfig(Box::new(tunnel.config.clone())));
+                self.overview
+                    .emit(OverviewInput::ShowConfig(Box::new(tunnel.config.clone())));
             }
             Self::Input::AddTunnel(config) => {
                 let mut tunnels = self.tunnels.guard();
@@ -177,7 +176,6 @@ impl SimpleComponent for App {
                 tunnels.remove(idx.current_index());
             }
             Self::Input::ImportTunnel(path) => {
-
                 let file_content = std::fs::read_to_string(&path);
                 let res = file_content.map(|c| parse_config(&c));
 
@@ -187,21 +185,25 @@ impl SimpleComponent for App {
                 };
 
                 if config.interface.name.is_none() {
-                    config.interface.name = path.file_stem().unwrap_or_else(|| todo!()).to_str().map(|s| s.to_owned());
+                    config.interface.name = path
+                        .file_stem()
+                        .unwrap_or_else(|| todo!())
+                        .to_str()
+                        .map(|s| s.to_owned());
                 }
 
                 sender.input(Self::Input::AddTunnel(Box::new(config)));
             }
             Self::Input::ExportTunnel => todo!(),
-            Self::Input::SaveConfigInitiate => {
-                self.overview.emit(OverviewInput::CollectTunnel)
-            },
+            Self::Input::SaveConfigInitiate => self.overview.emit(OverviewInput::CollectTunnel),
             Self::Input::SaveConfigFinish(tunnel) => {
-                let Some(idx) = self.selected_tunnel_idx else {return;};
+                let Some(idx) = self.selected_tunnel_idx else {
+                    return;
+                };
                 if let Some(selected_tunnel) = self.tunnels.guard().get_mut(idx) {
                     *selected_tunnel = Tunnel::new(*tunnel);
                 }
-            },
+            }
             Self::Input::AddPeer => {
                 self.overview.emit(OverviewInput::AddPeer);
             }

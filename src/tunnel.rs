@@ -1,4 +1,4 @@
-use std::{io, fs};
+use std::{fs, io};
 
 use gtk::prelude::*;
 use relm4::prelude::*;
@@ -20,7 +20,7 @@ impl Tunnel {
         let mut active = false;
 
         if let Ok(status) = fs::read_to_string(interface_path) {
-            if status == "up\n".to_owned() {
+            if status == "up\n" {
                 active = true;
                 println!("active");
             }
@@ -89,7 +89,7 @@ impl FactoryComponent for Tunnel {
                 // TODO
                 let _ = self.toggle();
                 self.active = !self.active;
-            },
+            }
         }
     }
 }
