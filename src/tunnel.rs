@@ -1,9 +1,13 @@
-use std::{fs, io, process::Command};
+use std::{fs, io, process::Command, path::PathBuf};
 
 use gtk::prelude::*;
 use relm4::prelude::*;
+use tar::{Header, Builder};
 
-use crate::config::*;
+use crate::{config::*, utils};
+
+// TODO: Accept as parameter.
+const ALLOWED_IP: &str = "0.0.0.0/0";
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Default, Clone)]
 pub struct Tunnel {
@@ -50,6 +54,90 @@ impl Tunnel {
             .wait()?;
 
         Ok(())
+    }
+
+    pub fn generate_configs(&mut self, allowed_ip: &str) -> Result<Vec<WireguardConfig>, io::Error> {
+        let config = &mut self.config;
+        let mut missing_fields: Vec<String> = vec![];
+        let interface_required_fields = [
+            ("interface address", &config.interface.address),
+            ("interface listen port", &config.interface.listen_port),
+        ];
+        for (name, _) in interface_required_fields
+            .into_iter()
+            .filter(|x| x.1.is_none())
+        {
+            missing_fields.push(name.to_string());
+        }
+
+        for (i, peer) in config.peers.iter().enumerate() {
+            if peer.allowed_ips.is_none() {
+                missing_fields.push(format!("peer {} allowed IPs", i + 1));
+            }
+        }
+
+        if !missing_fields.is_empty() {
+            let lines = missing_fields.iter().map(|x| format!("- {}\n", x)).collect::<Vec<String>>();
+            return Err(io::Error::other(format!("Missing fields:\n{}", lines.concat())));
+        }
+
+        let mut res = vec![];
+        let priv_key = match &config.interface.private_key {
+            Some(key) => key.clone(),
+            None => utils::generate_private_key()?
+        };
+        let pub_key = utils::generate_public_key(priv_key)?;
+
+        for (i, peer) in config.peers.iter_mut().enumerate() {
+            if peer.public_key.is_some() {
+                continue;
+            }
+
+            let peer_priv_key = utils::generate_private_key()?;
+            let peer_pub_key = utils::generate_public_key(peer_priv_key.clone())?;
+            peer.public_key = Some(peer_pub_key);
+
+            let interface = Interface {
+                name: Some(format!("peer-{}", i + 1)),
+                address: peer.allowed_ips.clone(),
+                listen_port: config.interface.listen_port.clone(),
+                private_key: Some(peer_priv_key),
+                ..Default::default()
+            };
+
+            let ipeer = Peer {
+                public_key: Some(pub_key.clone()),
+                allowed_ips: Some(allowed_ip.into()),
+                ..Default::default()
+            };
+
+            res.push(WireguardConfig {
+                interface,
+                peers: vec![ipeer]
+            });
+        }
+
+        res.insert(0, config.clone());
+
+        Ok(res)
+    }
+
+    pub fn write_configs_to_path(&mut self, path: PathBuf) -> io::Result<()> {
+        let cfgs = self.generate_configs(ALLOWED_IP)?;
+
+        let file = fs::File::create(path)?;
+        let mut ar = Builder::new(file);
+        let mut header = Header::new_gnu();
+        header.set_cksum();
+
+        for cfg in cfgs.iter() {
+            let mut name = cfg.interface.name.clone().unwrap();
+            name.push_str(".conf");
+            let content = write_config(cfg);
+            ar.append_data(&mut header, name, content.as_bytes())?;
+        }
+
+        ar.finish()
     }
 }
 

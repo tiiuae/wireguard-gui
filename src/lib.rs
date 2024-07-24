@@ -7,3 +7,5 @@ pub mod tunnel;
 pub mod peer;
 /// Overview of tunnel configuration.
 pub mod overview;
+// Various utility functions
+pub mod utils;
