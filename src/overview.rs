@@ -1,6 +1,6 @@
 // use gtk::prelude::*;
-use relm4::{prelude::*, gtk::prelude::*};
 use relm4::factory::{DynamicIndex, FactoryVecDeque};
+use relm4::{gtk::prelude::*, prelude::*};
 
 use crate::config::*;
 use crate::peer::*;
@@ -43,7 +43,6 @@ pub enum OverviewInput {
     RemovePeer(DynamicIndex),
     AddPeer,
     SetInterface(InterfaceSetKind, Option<String>),
-
 }
 
 #[derive(Debug)]
@@ -263,7 +262,8 @@ impl SimpleComponent for OverviewModel {
             });
 
         let mut model = Self {
-            interface: config.interface, peers
+            interface: config.interface,
+            peers,
         };
 
         model.replace_peers(config.peers);
@@ -278,38 +278,38 @@ impl SimpleComponent for OverviewModel {
             Self::Input::CollectTunnel => {
                 let cfg = WireguardConfig {
                     interface: self.interface.clone(),
-                    peers: self.peers.iter().map(|p| p.peer.clone()).collect()
+                    peers: self.peers.iter().map(|p| p.peer.clone()).collect(),
                 };
-                sender.output_sender().emit(Self::Output::SaveConfig(Box::new(cfg)));
-            },
+                sender
+                    .output_sender()
+                    .emit(Self::Output::SaveConfig(Box::new(cfg)));
+            }
             Self::Input::ShowConfig(config) => {
                 let WireguardConfig { interface, peers } = *config;
                 self.interface = interface;
                 self.replace_peers(peers);
-            },
+            }
             Self::Input::RemovePeer(idx) => {
                 let mut peers = self.peers.guard();
                 peers.remove(idx.current_index());
-            },
+            }
             Self::Input::AddPeer => {
                 let mut peers = self.peers.guard();
                 peers.push_back(Peer::default());
-            },
-            Self::Input::SetInterface(kind, value) => {
-                match kind {
-                    InterfaceSetKind::Name => self.interface.name = value,
-                    InterfaceSetKind::Address => self.interface.address = value,
-                    InterfaceSetKind::ListenPort => self.interface.listen_port = value,
-                    InterfaceSetKind::PrivateKey => self.interface.private_key = value,
-                    InterfaceSetKind::Dns => self.interface.dns = value,
-                    InterfaceSetKind::Table => self.interface.table = value,
-                    InterfaceSetKind::Mtu => self.interface.mtu = value,
-                    InterfaceSetKind::PreUp => self.interface.pre_up = value,
-                    InterfaceSetKind::PostUp => self.interface.post_up = value,
-                    InterfaceSetKind::PreDown => self.interface.pre_down = value,
-                    InterfaceSetKind::PostDown => self.interface.post_down = value,
-                }
             }
+            Self::Input::SetInterface(kind, value) => match kind {
+                InterfaceSetKind::Name => self.interface.name = value,
+                InterfaceSetKind::Address => self.interface.address = value,
+                InterfaceSetKind::ListenPort => self.interface.listen_port = value,
+                InterfaceSetKind::PrivateKey => self.interface.private_key = value,
+                InterfaceSetKind::Dns => self.interface.dns = value,
+                InterfaceSetKind::Table => self.interface.table = value,
+                InterfaceSetKind::Mtu => self.interface.mtu = value,
+                InterfaceSetKind::PreUp => self.interface.pre_up = value,
+                InterfaceSetKind::PostUp => self.interface.post_up = value,
+                InterfaceSetKind::PreDown => self.interface.pre_down = value,
+                InterfaceSetKind::PostDown => self.interface.post_down = value,
+            },
         }
     }
 }

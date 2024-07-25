@@ -1,8 +1,8 @@
-use std::{fs, io, process::Command, path::PathBuf};
+use std::{fs, io, path::PathBuf, process::Command};
 
 use gtk::prelude::*;
 use relm4::prelude::*;
-use tar::{Header, Builder};
+use tar::{Builder, Header};
 
 use crate::{config::*, utils};
 
@@ -56,7 +56,10 @@ impl Tunnel {
         Ok(())
     }
 
-    pub fn generate_configs(&mut self, allowed_ip: &str) -> Result<Vec<WireguardConfig>, io::Error> {
+    pub fn generate_configs(
+        &mut self,
+        allowed_ip: &str,
+    ) -> Result<Vec<WireguardConfig>, io::Error> {
         let config = &mut self.config;
         let mut missing_fields: Vec<String> = vec![];
         let interface_required_fields = [
@@ -77,14 +80,20 @@ impl Tunnel {
         }
 
         if !missing_fields.is_empty() {
-            let lines = missing_fields.iter().map(|x| format!("- {}\n", x)).collect::<Vec<String>>();
-            return Err(io::Error::other(format!("Missing fields:\n{}", lines.concat())));
+            let lines = missing_fields
+                .iter()
+                .map(|x| format!("- {}\n", x))
+                .collect::<Vec<String>>();
+            return Err(io::Error::other(format!(
+                "Missing fields:\n{}",
+                lines.concat()
+            )));
         }
 
         let mut res = vec![];
         let priv_key = match &config.interface.private_key {
             Some(key) => key.clone(),
-            None => utils::generate_private_key()?
+            None => utils::generate_private_key()?,
         };
         let pub_key = utils::generate_public_key(priv_key)?;
 
@@ -113,7 +122,7 @@ impl Tunnel {
 
             res.push(WireguardConfig {
                 interface,
-                peers: vec![ipeer]
+                peers: vec![ipeer],
             });
         }
 
@@ -134,6 +143,7 @@ impl Tunnel {
             let mut name = cfg.interface.name.clone().unwrap();
             name.push_str(".conf");
             let content = write_config(cfg);
+            println!("Adding content to tar archive:\n{}", content);
             ar.append_data(&mut header, name, content.as_bytes())?;
         }
 

@@ -10,9 +10,7 @@ pub struct PeerComp {
 
 impl PeerComp {
     pub fn new(peer: Peer) -> Self {
-        Self {
-            peer
-        }
+        Self { peer }
     }
 }
 
@@ -27,7 +25,7 @@ pub enum PeerSetKind {
 
 #[derive(Debug)]
 pub enum PeerInput {
-    Set(PeerSetKind, Option<String>)
+    Set(PeerSetKind, Option<String>),
 }
 
 #[derive(Debug)]
@@ -140,20 +138,22 @@ impl FactoryComponent for PeerComp {
         }
     }
 
-    fn init_model(peer_config: Self::Init, _index: &DynamicIndex, _sender: FactorySender<Self>) -> Self {
+    fn init_model(
+        peer_config: Self::Init,
+        _index: &DynamicIndex,
+        _sender: FactorySender<Self>,
+    ) -> Self {
         Self::new(peer_config)
     }
 
     fn update(&mut self, msg: Self::Input, _sender: relm4::FactorySender<Self>) {
         match msg {
-            Self::Input::Set(k, value) => {
-                match k {
-                    PeerSetKind::Name => self.peer.name = value,
-                    PeerSetKind::AllowedIps => self.peer.allowed_ips = value,
-                    PeerSetKind::Endpoint => self.peer.endpoint = value,
-                    PeerSetKind::PublicKey => self.peer.public_key = value,
-                    PeerSetKind::PersistentKeepalive => self.peer.persistent_keepalive = value,
-                }
+            Self::Input::Set(k, value) => match k {
+                PeerSetKind::Name => self.peer.name = value,
+                PeerSetKind::AllowedIps => self.peer.allowed_ips = value,
+                PeerSetKind::Endpoint => self.peer.endpoint = value,
+                PeerSetKind::PublicKey => self.peer.public_key = value,
+                PeerSetKind::PersistentKeepalive => self.peer.persistent_keepalive = value,
             },
         }
     }

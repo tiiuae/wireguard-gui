@@ -182,7 +182,7 @@ pub fn write_config(c: &WireguardConfig) -> String {
 pub fn get_value(f: &Option<String>) -> &str {
     match f {
         Some(v) => v,
-        None => "unknown"
+        None => "unknown",
     }
 }
 

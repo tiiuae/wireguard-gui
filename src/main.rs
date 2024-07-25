@@ -237,11 +237,10 @@ impl SimpleComponent for App {
                     .emit(SaveDialogMsg::SaveAs(format!("{name}.tar")));
             }
             Self::Input::ExportTunnel(path) => {
-                let Some(mut tunnel) = self.selected_tunnel_idx.and_then(|idx| {
-                    self.tunnels
-                        .guard()
-                        .get(idx).cloned()
-                }) else {
+                let Some(mut tunnel) = self
+                    .selected_tunnel_idx
+                    .and_then(|idx| self.tunnels.guard().get(idx).cloned())
+                else {
                     sender
                         .input_sender()
                         .emit(Self::Input::Error("No tunnel selected to export.".into()));
@@ -249,9 +248,10 @@ impl SimpleComponent for App {
                 };
 
                 if let Err(err) = tunnel.write_configs_to_path(path) {
-                    sender
-                        .input_sender()
-                        .emit(Self::Input::Error(format!("Config creation error: {:#?}", err)));
+                    sender.input_sender().emit(Self::Input::Error(format!(
+                        "Config creation error: {:#?}",
+                        err
+                    )));
                 }
             }
             Self::Input::SaveConfigInitiate => self.overview.emit(OverviewInput::CollectTunnel),
