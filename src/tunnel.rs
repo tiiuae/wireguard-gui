@@ -26,7 +26,6 @@ impl Tunnel {
         if let Ok(status) = fs::read_to_string(interface_path) {
             if status == "up\n" {
                 active = true;
-                println!("active");
             }
         }
 
@@ -143,7 +142,6 @@ impl Tunnel {
             let mut name = cfg.interface.name.clone().unwrap();
             name.push_str(".conf");
             let content = write_config(cfg);
-            println!("Adding content to tar archive:\n{}", content);
             ar.append_data(&mut header, name, content.as_bytes())?;
         }
 
