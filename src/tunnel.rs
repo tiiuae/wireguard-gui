@@ -1,8 +1,9 @@
 use std::{fs, io, path::PathBuf, process::Command};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use gtk::prelude::*;
 use relm4::prelude::*;
-use tar::{Builder, Header};
+use tar::{Builder, EntryType, Header, HeaderMode};
 
 use crate::{config::*, utils};
 
@@ -133,15 +134,23 @@ impl Tunnel {
     pub fn write_configs_to_path(&mut self, path: PathBuf) -> io::Result<()> {
         let cfgs = self.generate_configs(ALLOWED_IP)?;
 
+        let time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+
         let file = fs::File::create(path)?;
         let mut ar = Builder::new(file);
+        ar.mode(HeaderMode::Complete);
         let mut header = Header::new_gnu();
-        header.set_cksum();
 
         for cfg in cfgs.iter() {
             let mut name = cfg.interface.name.clone().unwrap();
             name.push_str(".conf");
             let content = write_config(cfg);
+
+            header.set_size(content.as_bytes().len().try_into().unwrap());
+            header.set_entry_type(EntryType::Regular);
+            header.set_mtime(time.as_secs());
+            header.set_mode(0o755);
+            header.set_cksum();
             ar.append_data(&mut header, name, content.as_bytes())?;
         }
 
