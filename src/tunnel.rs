@@ -1,5 +1,5 @@
-use std::{fs, io, path::PathBuf, process::Command};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::{fs, io, path::PathBuf, process::Command};
 
 use gtk::prelude::*;
 use relm4::prelude::*;

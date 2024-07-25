@@ -45,60 +45,64 @@ impl SimpleComponent for App {
             set_title: Some("Wireguard"),
             set_default_size: (480, 340),
 
-            // TODO: Replacing with panes (https://docs.gtk.org/gtk4/class.Paned.html)
-            gtk::Grid {
-                set_row_spacing: 5,
-                set_column_spacing: 5,
-                set_margin_all: 5,
+            gtk::Paned {
+                set_shrink_start_child: false,
+                set_shrink_end_child: false,
 
-                attach[0, 0, 1, 1] = &gtk::ScrolledWindow {
-                    set_vexpand: true,
+                #[wrap(Some)]
+                set_start_child = &gtk::Box {
+                    set_orientation: gtk::Orientation::Vertical,
+                    gtk::ScrolledWindow {
+                        set_vexpand: true,
 
-                    #[local_ref]
-                    tunnels_list_box -> gtk::ListBox {}
-                },
-
-                attach[0, 1, 1, 1] = &gtk::Box {
-                    gtk::Button {
-                        set_label: "Add Tunnel",
-                        connect_clicked => Self::Input::AddTunnel(Box::default()),
+                        #[local_ref]
+                        tunnels_list_box -> gtk::ListBox {}
                     },
 
-                    append: model.import_button.widget()
-                },
+                    gtk::Box {
+                        gtk::Button {
+                            set_label: "Add Tunnel",
+                            connect_clicked => Self::Input::AddTunnel(Box::default()),
+                        },
 
-
-                #[name = "config_overview"]
-                attach[1, 0, 1, 1] = &gtk::Box {
-                    set_vexpand: true,
-                    set_hexpand: true,
-
-                    // TODO: Just set property
-                    match () {
-                        () => model.overview.widget().clone(),
+                        append: model.import_button.widget()
                     },
                 },
+                #[wrap(Some)]
+                set_end_child = &gtk::Box {
+                    set_orientation: gtk::Orientation::Vertical,
+                    #[name = "config_overview"]
+                    gtk::Box {
+                        set_vexpand: true,
+                        set_hexpand: true,
 
-                attach[1, 1, 1, 1] = &gtk::CenterBox {
-                    #[wrap(Some)]
-                    set_end_widget = &gtk::Box {
-                        gtk::Button {
-                            set_label: "Save",
-                            connect_clicked => Self::Input::SaveConfigInitiate,
+                        // TODO: Just set property
+                        match () {
+                            () => model.overview.widget().clone(),
                         },
+                    },
 
-                        #[name = "export_button"]
-                        gtk::Button {
-                            set_label: "Export",
-                            connect_clicked => Self::Input::ExportStart,
-                        },
+                    gtk::CenterBox {
+                        #[wrap(Some)]
+                        set_end_widget = &gtk::Box {
+                            gtk::Button {
+                                set_label: "Save",
+                                connect_clicked => Self::Input::SaveConfigInitiate,
+                            },
 
-                        gtk::Button {
-                            set_label: "Add Peer",
-                            connect_clicked => Self::Input::AddPeer,
-                        },
+                            #[name = "export_button"]
+                            gtk::Button {
+                                set_label: "Export",
+                                connect_clicked => Self::Input::ExportStart,
+                            },
+
+                            gtk::Button {
+                                set_label: "Add Peer",
+                                connect_clicked => Self::Input::AddPeer,
+                            },
+                        }
                     }
-                }
+                },
             },
         }
     }
