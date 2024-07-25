@@ -58,7 +58,7 @@ impl Tunnel {
 
     pub fn generate_configs(
         &mut self,
-        allowed_ip: &str,
+        _allowed_ip: &str,
     ) -> Result<Vec<WireguardConfig>, io::Error> {
         let config = &mut self.config;
         let mut missing_fields: Vec<String> = vec![];
@@ -116,7 +116,8 @@ impl Tunnel {
 
             let ipeer = Peer {
                 public_key: Some(pub_key.clone()),
-                allowed_ips: Some(allowed_ip.into()),
+                allowed_ips: config.interface.address.clone(),
+                // allowed_ips: Some(allowed_ip.into()),
                 ..Default::default()
             };
 
