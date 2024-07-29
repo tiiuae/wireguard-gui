@@ -1,5 +1,31 @@
-use std::io::{self, Result, Write};
+use std::fs;
+use std::io::{self, Error, Result, Write};
 use std::process::*;
+
+use crate::config::{parse_config, WireguardConfig};
+
+const TUNNELS_PATH: &str = "/etc/wireguard";
+
+pub fn load_existing_configurations() -> Result<Vec<WireguardConfig>> {
+    let mut cfgs = vec![];
+
+    for entry in fs::read_dir(TUNNELS_PATH)? {
+        let file = entry?;
+        if file.file_type()?.is_file() {
+            let file_path = file.path();
+            let file_content = fs::read_to_string(&file_path)?;
+            let mut cfg = parse_config(&file_content).map_err(Error::other)?;
+            if cfg.interface.name.is_none() {
+                if let Some(file_name) = file_path.file_stem().and_then(|n| n.to_str()) {
+                    cfg.interface.name = Some(file_name.to_string());
+                }
+            }
+            cfgs.push(cfg);
+        }
+    }
+
+    Ok(cfgs)
+}
 
 pub fn generate_private_key() -> Result<String> {
     let output = Command::new("wg")

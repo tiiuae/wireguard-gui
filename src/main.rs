@@ -112,13 +112,26 @@ impl SimpleComponent for App {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
-        let tunnels = FactoryVecDeque::builder()
+        let mut tunnels = FactoryVecDeque::builder()
             .launch(gtk::ListBox::default())
             .forward(sender.input_sender(), |output| match output {
                 TunnelOutput::Remove(idx) => Self::Input::RemoveTunnel(idx),
 
                 TunnelOutput::Error(msg) => Self::Input::Error(msg),
             });
+
+        match wireguard_gui::utils::load_existing_configurations() {
+            Ok(cfgs) => {
+                let mut g = tunnels.guard();
+
+                for cfg in cfgs {
+                    g.push_back(cfg);
+                }
+            },
+            Err(err) => {
+                eprintln!("Could not load existing configurations: {:#?}", err);
+            },
+        };
 
         let import_button = OpenButton::builder()
             .launch(OpenButtonSettings {
