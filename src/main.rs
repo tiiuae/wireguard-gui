@@ -5,16 +5,15 @@ use relm4::factory::{DynamicIndex, FactoryVecDeque};
 use relm4::prelude::*;
 use relm4_components::open_button::{OpenButton, OpenButtonSettings};
 use relm4_components::open_dialog::OpenDialogSettings;
-use relm4_components::save_dialog::*;
 
-use wireguard_gui::{config::*, overview::*, tunnel::*};
+use wireguard_gui::{config::*, generator::*, overview::*, tunnel::*};
 
 struct App {
     tunnels: FactoryVecDeque<Tunnel>,
     selected_tunnel_idx: Option<usize>,
     overview: Controller<OverviewModel>,
+    generator: Controller<GeneratorModel>,
     import_button: Controller<OpenButton>,
-    export_dialog: Controller<SaveDialog>,
 }
 
 #[derive(Debug)]
@@ -23,15 +22,11 @@ enum AppMsg {
     AddTunnel(Box<WireguardConfig>),
     RemoveTunnel(DynamicIndex),
     ImportTunnel(PathBuf),
-    ExportStart,
-    ExportTunnel(PathBuf),
     SaveConfigInitiate,
     SaveConfigFinish(Box<WireguardConfig>),
     AddPeer,
-    // Generate keypair, assign it to tunnel and show new tunnel.
-    GenerateKeypair,
+    ShowGenerator,
     Error(String),
-    Ignore,
 }
 
 #[relm4::component]
@@ -65,7 +60,12 @@ impl SimpleComponent for App {
                             connect_clicked => Self::Input::AddTunnel(Box::default()),
                         },
 
-                        append: model.import_button.widget()
+                        append: model.import_button.widget(),
+
+                        gtk::Button {
+                            set_label: "Generate Configs",
+                            connect_clicked => Self::Input::ShowGenerator,
+                        }
                     },
                 },
                 #[wrap(Some)]
@@ -88,12 +88,6 @@ impl SimpleComponent for App {
                             gtk::Button {
                                 set_label: "Save",
                                 connect_clicked => Self::Input::SaveConfigInitiate,
-                            },
-
-                            #[name = "export_button"]
-                            gtk::Button {
-                                set_label: "Export",
-                                connect_clicked => Self::Input::ExportStart,
                             },
 
                             gtk::Button {
@@ -127,10 +121,10 @@ impl SimpleComponent for App {
                 for cfg in cfgs {
                     g.push_back(cfg);
                 }
-            },
+            }
             Err(err) => {
                 eprintln!("Could not load existing configurations: {:#?}", err);
-            },
+            }
         };
 
         let import_button = OpenButton::builder()
@@ -153,39 +147,25 @@ impl SimpleComponent for App {
             })
             .forward(sender.input_sender(), Self::Input::ImportTunnel);
 
-        let export_dialog = SaveDialog::builder()
-            .transient_for_native(&root)
-            .launch(SaveDialogSettings {
-                accept_label: String::from("Export"),
-                cancel_label: String::from("Cancel"),
-                create_folders: true,
-                is_modal: true,
-                filters: vec![{
-                    let filter = gtk::FileFilter::new();
-                    filter.add_mime_type("application/x-tar");
-                    // filter.
-                    // filter.add_pattern("*.tar");
-                    filter
-                }],
-            })
-            .forward(sender.input_sender(), |response| match response {
-                SaveDialogResponse::Accept(path) => Self::Input::ExportTunnel(path),
-                SaveDialogResponse::Cancel => Self::Input::Ignore,
-            });
-
         let overview = OverviewModel::builder()
             .launch(WireguardConfig::default())
             .forward(sender.input_sender(), |msg| match msg {
-                OverviewOutput::GenerateKeypair => AppMsg::GenerateKeypair,
-                OverviewOutput::SaveConfig(config) => AppMsg::SaveConfigFinish(config),
+                OverviewOutput::SaveConfig(config) => Self::Input::SaveConfigFinish(config),
             });
+
+        let generator =
+            GeneratorModel::builder()
+                .launch(())
+                .forward(sender.input_sender(), |msg| match msg {
+                    GeneratorOutput::GeneratedHostConfig(cfg) => Self::Input::AddTunnel(Box::new(cfg))
+                });
 
         let model = App {
             tunnels,
             selected_tunnel_idx: None,
             import_button,
-            export_dialog,
             overview,
+            generator
         };
 
         let tunnels_list_box = model.tunnels.widget();
@@ -237,40 +217,6 @@ impl SimpleComponent for App {
 
                 sender.input(Self::Input::AddTunnel(Box::new(config)));
             }
-            Self::Input::ExportStart => {
-                let Some(name) = self.selected_tunnel_idx.and_then(|idx| {
-                    self.tunnels
-                        .guard()
-                        .get(idx)
-                        .map(|selected_tunnel| selected_tunnel.name.clone())
-                }) else {
-                    sender
-                        .input_sender()
-                        .emit(Self::Input::Error("No tunnel selected to export.".into()));
-                    return;
-                };
-
-                self.export_dialog
-                    .emit(SaveDialogMsg::SaveAs(format!("{name}.tar")));
-            }
-            Self::Input::ExportTunnel(path) => {
-                let Some(mut tunnel) = self
-                    .selected_tunnel_idx
-                    .and_then(|idx| self.tunnels.guard().get(idx).cloned())
-                else {
-                    sender
-                        .input_sender()
-                        .emit(Self::Input::Error("No tunnel selected to export.".into()));
-                    return;
-                };
-
-                if let Err(err) = tunnel.write_configs_to_path(path) {
-                    sender.input_sender().emit(Self::Input::Error(format!(
-                        "Config creation error: {:#?}",
-                        err
-                    )));
-                }
-            }
             Self::Input::SaveConfigInitiate => self.overview.emit(OverviewInput::CollectTunnel),
             Self::Input::SaveConfigFinish(tunnel) => {
                 let Some(idx) = self.selected_tunnel_idx else {
@@ -283,12 +229,13 @@ impl SimpleComponent for App {
             Self::Input::AddPeer => {
                 self.overview.emit(OverviewInput::AddPeer);
             }
-            Self::Input::GenerateKeypair => todo!(),
+            Self::Input::ShowGenerator => {
+                self.generator.emit(GeneratorInput::Show);
+            }
             Self::Input::Error(msg) => {
                 // TODO: Emit modal window on error
                 dbg!(msg);
             }
-            Self::Input::Ignore => (),
         }
     }
 }

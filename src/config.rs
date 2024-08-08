@@ -1,3 +1,10 @@
+use std::fs;
+use std::io;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use tar::{Builder, EntryType, Header, HeaderMode};
+
 /// Defines the VPN settings for the local node.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Default, Debug)]
 pub struct Interface {
@@ -177,6 +184,35 @@ pub fn write_config(c: &WireguardConfig) -> String {
     }
 
     res
+}
+
+
+pub fn write_configs_to_path(cfgs: Vec<WireguardConfig>, path: PathBuf) -> io::Result<()> {
+    let time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+
+    let file = fs::File::create(path)?;
+    let mut ar = Builder::new(file);
+    ar.mode(HeaderMode::Complete);
+    let mut header = Header::new_gnu();
+
+    for (i, cfg) in cfgs.iter().enumerate() {
+        let mut name = cfg
+            .interface
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("configuration-{i}"));
+        name.push_str(".conf");
+        let content = crate::config::write_config(cfg);
+
+        header.set_size(content.as_bytes().len().try_into().unwrap());
+        header.set_entry_type(EntryType::Regular);
+        header.set_mtime(time.as_secs());
+        header.set_mode(0o755);
+        header.set_cksum();
+        ar.append_data(&mut header, name, content.as_bytes())?;
+    }
+
+    ar.finish()
 }
 
 pub fn get_value(f: &Option<String>) -> &str {

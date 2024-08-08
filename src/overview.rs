@@ -47,7 +47,6 @@ pub enum OverviewInput {
 
 #[derive(Debug)]
 pub enum OverviewOutput {
-    GenerateKeypair,
     SaveConfig(Box<WireguardConfig>),
 }
 
