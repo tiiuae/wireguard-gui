@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use relm4::{gtk::prelude::*, prelude::*};
-use relm4_components::save_dialog::*;
+use relm4_components::{alert::*, save_dialog::*};
 
 use crate::{
     config::{write_configs_to_path, WireguardConfig},
@@ -17,6 +17,7 @@ pub struct GeneratorModel {
     save_dialog: Controller<SaveDialog>,
     // XXX: I haven't found simpler way to store state required to save generated configs.
     latest_generated_configs: Option<Vec<WireguardConfig>>,
+    alert_dialog: Controller<Alert>,
 }
 
 #[derive(Debug)]
@@ -113,11 +114,25 @@ impl SimpleComponent for GeneratorModel {
                 SaveDialogResponse::Cancel => Self::Input::Ignore,
             });
 
+        let alert_dialog = Alert::builder()
+            .transient_for(&root)
+            .launch(AlertSettings {
+                text: String::from("Error"),
+                secondary_text: None,
+                confirm_label: None,
+                cancel_label: Some(String::from("Ok")),
+                option_label: None,
+                is_modal: true,
+                destructive_accept: true,
+            })
+            .forward(sender.input_sender(), |_| Self::Input::Ignore);
+
         let model = Self {
             visible: false,
             fields,
             save_dialog,
             latest_generated_configs: None,
+            alert_dialog,
         };
 
         let widgets = view_output!();
@@ -132,6 +147,7 @@ impl SimpleComponent for GeneratorModel {
             Self::Input::AskForFieldsMap => {
                 self.fields.emit(FieldsInput::Collect);
             }
+            // FIXME: On the first run allows to save with all fields being empty.
             Self::Input::Generate(fields) => match GenerationSettings::try_from(fields) {
                 Ok(settings) => {
                     self.latest_generated_configs = Some(settings.generate());
@@ -139,7 +155,13 @@ impl SimpleComponent for GeneratorModel {
                         .emit(SaveDialogMsg::SaveAs(format!("clients.tar")))
                 }
                 Err(e) => {
-                    eprintln!("Error happened during generation: {}", e);
+                    self.alert_dialog
+                        .state()
+                        .get_mut()
+                        .model
+                        .settings
+                        .secondary_text = Some(e.into());
+                    self.alert_dialog.emit(AlertMsg::Show);
                 }
             },
             Self::Input::SaveGeneratedInPath(path) => {

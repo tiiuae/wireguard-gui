@@ -5,6 +5,7 @@ use relm4::factory::{DynamicIndex, FactoryVecDeque};
 use relm4::prelude::*;
 use relm4_components::open_button::{OpenButton, OpenButtonSettings};
 use relm4_components::open_dialog::OpenDialogSettings;
+use relm4_components::alert::*;
 
 use wireguard_gui::{config::*, generator::*, overview::*, tunnel::*};
 
@@ -14,6 +15,7 @@ struct App {
     overview: Controller<OverviewModel>,
     generator: Controller<GeneratorModel>,
     import_button: Controller<OpenButton>,
+    alert_dialog: Controller<Alert>,
 }
 
 #[derive(Debug)]
@@ -27,6 +29,7 @@ enum AppMsg {
     AddPeer,
     ShowGenerator,
     Error(String),
+    Ignore,
 }
 
 #[relm4::component]
@@ -157,15 +160,31 @@ impl SimpleComponent for App {
             GeneratorModel::builder()
                 .launch(())
                 .forward(sender.input_sender(), |msg| match msg {
-                    GeneratorOutput::GeneratedHostConfig(cfg) => Self::Input::AddTunnel(Box::new(cfg))
+                    GeneratorOutput::GeneratedHostConfig(cfg) => {
+                        Self::Input::AddTunnel(Box::new(cfg))
+                    }
                 });
+
+        let alert_dialog = Alert::builder()
+            .transient_for(&root)
+            .launch(AlertSettings {
+                text: String::from("Error"),
+                secondary_text: None,
+                confirm_label: None,
+                cancel_label: Some(String::from("Ok")),
+                option_label: None,
+                is_modal: true,
+                destructive_accept: true,
+            })
+            .forward(sender.input_sender(), |_| Self::Input::Ignore);
 
         let model = App {
             tunnels,
             selected_tunnel_idx: None,
             import_button,
             overview,
-            generator
+            generator,
+            alert_dialog
         };
 
         let tunnels_list_box = model.tunnels.widget();
@@ -233,9 +252,15 @@ impl SimpleComponent for App {
                 self.generator.emit(GeneratorInput::Show);
             }
             Self::Input::Error(msg) => {
-                // TODO: Emit modal window on error
-                dbg!(msg);
+                self.alert_dialog
+                        .state()
+                        .get_mut()
+                        .model
+                        .settings
+                        .secondary_text = Some(msg);
+                self.alert_dialog.emit(AlertMsg::Show);
             }
+            Self::Input::Ignore => (),
         }
     }
 }
