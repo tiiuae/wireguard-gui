@@ -4,7 +4,7 @@ use std::process::*;
 
 use crate::config::{parse_config, WireguardConfig};
 
-const TUNNELS_PATH: &str = "/etc/wireguard";
+pub const TUNNELS_PATH: &str = "/etc/wireguard";
 
 pub fn load_existing_configurations() -> Result<Vec<WireguardConfig>> {
     let mut cfgs = vec![];

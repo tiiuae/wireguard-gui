@@ -1,9 +1,15 @@
-use std::{fs, io, process::Command};
+use std::{
+    fs,
+    io::{self, Read},
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+};
 
 use gtk::prelude::*;
 use relm4::prelude::*;
 
 use crate::config::*;
+use crate::utils::*;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Default, Clone)]
 pub struct Tunnel {
@@ -32,23 +38,37 @@ impl Tunnel {
         }
     }
 
+    pub fn path(&self) -> PathBuf {
+        Path::new(TUNNELS_PATH).join(format!("{}.conf", self.name))
+    }
+
     /// Toggle actual interface using wireguard-tools.
-    pub fn toggle(&mut self) -> Result<(), io::Error> {
-        let dir = tempfile::tempdir()?;
+    pub fn try_toggle(&mut self) -> Result<(), io::Error> {
+        let config_path = self.path();
 
-        let config_path = dir.path().join(format!("{}.conf", self.name));
+        let mut cmd = Command::new("wg-quick");
 
-        fs::write(&config_path, write_config(&self.config))?;
+        cmd.args([
+            if !self.active { "up" } else { "down" },
+            config_path.to_str().unwrap(),
+        ])
+        .stderr(Stdio::piped());
 
-        Command::new("wg-quick")
-            .args([
-                if self.active { "up" } else { "down" },
-                config_path.to_str().unwrap(),
-            ])
-            .spawn()?
-            .wait()?;
+        let mut proc = cmd.spawn()?;
 
-        Ok(())
+        let code = proc.wait()?.code();
+
+        if let Some(0) = code {
+            Ok(())
+        } else {
+            let mut stderr = String::new();
+            proc.stderr.unwrap().read_to_string(&mut stderr).unwrap();
+
+            Err(io::Error::other(format!(
+                "`wg-quick` exit code: {:?}. Error message:\n{}",
+                code, stderr
+            )))
+        }
     }
 }
 
@@ -77,10 +97,14 @@ impl FactoryComponent for Tunnel {
             set_orientation: gtk::Orientation::Horizontal,
             set_spacing: 5,
 
-            gtk::CheckButton {
-                connect_toggled => Self::Input::Toggle,
+            #[name(switch)]
+            gtk::Switch {
                 set_active: self.active,
-                set_label: Some(&self.name),
+                connect_state_notify => Self::Input::Toggle,
+            },
+
+            gtk::Label {
+                set_label: &self.name,
             },
 
             gtk::Button::with_label("Remove") {
@@ -95,14 +119,22 @@ impl FactoryComponent for Tunnel {
         Self::new(config)
     }
 
-    fn update(&mut self, msg: Self::Input, sender: relm4::FactorySender<Self>) {
+    fn update_with_view(
+        &mut self,
+        _widgets: &mut Self::Widgets,
+        msg: Self::Input,
+        sender: relm4::FactorySender<Self>,
+    ) {
         match msg {
-            Self::Input::Toggle => match self.toggle() {
-                Ok(_) => self.active = !self.active,
-                Err(err) => sender
-                    .output_sender()
-                    .emit(Self::Output::Error(err.to_string())),
-            },
+            Self::Input::Toggle => {
+                match self.try_toggle() {
+                    Ok(_) => self.active = !self.active,
+                    Err(err) => sender
+                        .output_sender()
+                        .emit(Self::Output::Error(err.to_string())),
+                };
+                _widgets.switch.set_state(self.active);
+            }
         }
     }
 }

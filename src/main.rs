@@ -1,11 +1,11 @@
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 use gtk::prelude::*;
 use relm4::factory::{DynamicIndex, FactoryVecDeque};
 use relm4::prelude::*;
+use relm4_components::alert::*;
 use relm4_components::open_button::{OpenButton, OpenButtonSettings};
 use relm4_components::open_dialog::OpenDialogSettings;
-use relm4_components::alert::*;
 
 use wireguard_gui::{config::*, generator::*, overview::*, tunnel::*};
 
@@ -184,7 +184,7 @@ impl SimpleComponent for App {
             import_button,
             overview,
             generator,
-            alert_dialog
+            alert_dialog,
         };
 
         let tunnels_list_box = model.tunnels.widget();
@@ -237,12 +237,17 @@ impl SimpleComponent for App {
                 sender.input(Self::Input::AddTunnel(Box::new(config)));
             }
             Self::Input::SaveConfigInitiate => self.overview.emit(OverviewInput::CollectTunnel),
-            Self::Input::SaveConfigFinish(tunnel) => {
+            Self::Input::SaveConfigFinish(config) => {
                 let Some(idx) = self.selected_tunnel_idx else {
                     return;
                 };
                 if let Some(selected_tunnel) = self.tunnels.guard().get_mut(idx) {
-                    *selected_tunnel = Tunnel::new(*tunnel);
+                    let new_tunnel = Tunnel::new(*config);
+                    if let Err(e) = fs::write(new_tunnel.path(), write_config(&new_tunnel.config)) {
+                        sender.input(Self::Input::Error(format!("{:#?}", e)));
+                        return;
+                    }
+                    *selected_tunnel = new_tunnel.clone();
                 }
             }
             Self::Input::AddPeer => {
@@ -253,11 +258,11 @@ impl SimpleComponent for App {
             }
             Self::Input::Error(msg) => {
                 self.alert_dialog
-                        .state()
-                        .get_mut()
-                        .model
-                        .settings
-                        .secondary_text = Some(msg);
+                    .state()
+                    .get_mut()
+                    .model
+                    .settings
+                    .secondary_text = Some(msg);
                 self.alert_dialog.emit(AlertMsg::Show);
             }
             Self::Input::Ignore => (),
