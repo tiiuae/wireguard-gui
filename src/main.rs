@@ -271,7 +271,7 @@ impl SimpleComponent for App {
 }
 
 fn main() {
-    karen::builder().wrapper("pkexec").with_env(&["DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "PATH"]).unwrap();
+    karen::builder().wrapper("pkexec").with_env(&["DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XDG_DATA_DIRS", "LIBGL_ALWAYS_SOFTWARE", "PATH"]).unwrap();
 
     let app = RelmApp::new("relm4.ghaf.wireguard-gui");
     app.run::<App>(());
