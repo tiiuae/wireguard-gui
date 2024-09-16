@@ -39,70 +39,96 @@ impl SimpleComponent for App {
     type Output = ();
 
     view! {
-        gtk::Window {
-            set_title: Some("Wireguard"),
-            set_default_size: (480, 340),
+        adw::Window {
+            gtk::Box {
+                set_orientation: gtk::Orientation::Vertical,
+                adw::HeaderBar {
 
-            gtk::Paned {
-                set_shrink_start_child: false,
-                set_shrink_end_child: false,
-
-                #[wrap(Some)]
-                set_start_child = &gtk::Box {
-                    set_orientation: gtk::Orientation::Vertical,
-                    gtk::ScrolledWindow {
-                        set_vexpand: true,
-
-                        #[local_ref]
-                        tunnels_list_box -> gtk::ListBox {}
-                    },
-
-                    gtk::Box {
-                        gtk::Button {
-                            set_label: "Add Tunnel",
-                            connect_clicked => Self::Input::AddTunnel(Box::default()),
-                        },
-
-                        append: model.import_button.widget(),
-
-                        gtk::Button {
-                            set_label: "Generate Configs",
-                            connect_clicked => Self::Input::ShowGenerator,
-                        }
-                    },
                 },
-                #[wrap(Some)]
-                set_end_child = &gtk::Box {
-                    set_orientation: gtk::Orientation::Vertical,
-                    #[name = "config_overview"]
-                    gtk::Box {
-                        set_vexpand: true,
-                        set_hexpand: true,
-
-                        // TODO: Just set property
-                        match () {
-                            () => model.overview.widget().clone(),
-                        },
-                    },
-
-                    gtk::CenterBox {
+                gtk::Box {
+                    adw::NavigationSplitView {
                         #[wrap(Some)]
-                        set_end_widget = &gtk::Box {
-                            gtk::Button {
-                                set_label: "Save",
-                                connect_clicked => Self::Input::SaveConfigInitiate,
-                            },
-
-                            gtk::Button {
-                                set_label: "Add Peer",
-                                connect_clicked => Self::Input::AddPeer,
-                            },
-                        }
+                        set_content = &adw::NavigationPage {
+                            set_vexpand: true,
+                            gtk::Label::new(Some("hi")),
+                        },
+                        #[wrap(Some)]
+                        set_sidebar = &adw::NavigationPage {
+                            set_vexpand: true,
+                            gtk::Label::new(Some("bye")),
+                        },
                     }
-                },
-            },
+                }
+            }
+            // adw::HeaderBar {}
         }
     }
+
+    // view! {
+    //     gtk::Window {
+    //         set_title: Some("Wireguard"),
+    //         set_default_size: (480, 340),
+
+    //         gtk::Paned {
+    //             set_shrink_start_child: false,
+    //             set_shrink_end_child: false,
+
+    //             #[wrap(Some)]
+    //             set_start_child = &gtk::Box {
+    //                 set_orientation: gtk::Orientation::Vertical,
+    //                 gtk::ScrolledWindow {
+    //                     set_vexpand: true,
+
+    //                     #[local_ref]
+    //                     tunnels_list_box -> gtk::ListBox {}
+    //                 },
+
+    //                 gtk::Box {
+    //                     gtk::Button {
+    //                         set_label: "Add Tunnel",
+    //                         connect_clicked => Self::Input::AddTunnel(Box::default()),
+    //                     },
+
+    //                     append: model.import_button.widget(),
+
+    //                     gtk::Button {
+    //                         set_label: "Generate Configs",
+    //                         connect_clicked => Self::Input::ShowGenerator,
+    //                     }
+    //                 },
+    //             },
+    //             #[wrap(Some)]
+    //             set_end_child = &gtk::Box {
+    //                 set_orientation: gtk::Orientation::Vertical,
+    //                 #[name = "config_overview"]
+    //                 gtk::Box {
+    //                     set_vexpand: true,
+    //                     set_hexpand: true,
+
+    //                     // TODO: Just set property
+    //                     match () {
+    //                         () => model.overview.widget().clone(),
+    //                     },
+    //                 },
+
+    //                 gtk::CenterBox {
+    //                     #[wrap(Some)]
+    //                     set_end_widget = &gtk::Box {
+    //                         gtk::Button {
+    //                             set_label: "Save",
+    //                             connect_clicked => Self::Input::SaveConfigInitiate,
+    //                         },
+
+    //                         gtk::Button {
+    //                             set_label: "Add Peer",
+    //                             connect_clicked => Self::Input::AddPeer,
+    //                         },
+    //                     }
+    //                 }
+    //             },
+    //         },
+    //     }
+    // }
 
     fn init(
         _counter: Self::Init,
@@ -201,77 +227,77 @@ impl SimpleComponent for App {
     }
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
-        match msg {
-            Self::Input::ShowOverview(idx) => {
-                self.selected_tunnel_idx = Some(idx);
-                let tunnel = self.tunnels.get(idx).unwrap();
-                self.overview
-                    .emit(OverviewInput::ShowConfig(Box::new(tunnel.config.clone())));
-            }
-            Self::Input::AddTunnel(config) => {
-                let mut tunnels = self.tunnels.guard();
-                tunnels.push_back(*config);
-            }
-            Self::Input::RemoveTunnel(idx) => {
-                let mut tunnels = self.tunnels.guard();
-                // self.tunnels.widget.selection
-                tunnels.remove(idx.current_index());
-            }
-            Self::Input::ImportTunnel(path) => {
-                let file_content = std::fs::read_to_string(&path);
-                let res = file_content.map(|c| parse_config(&c));
+        // match msg {
+        //     Self::Input::ShowOverview(idx) => {
+        //         self.selected_tunnel_idx = Some(idx);
+        //         let tunnel = self.tunnels.get(idx).unwrap();
+        //         self.overview
+        //             .emit(OverviewInput::ShowConfig(Box::new(tunnel.config.clone())));
+        //     }
+        //     Self::Input::AddTunnel(config) => {
+        //         let mut tunnels = self.tunnels.guard();
+        //         tunnels.push_back(*config);
+        //     }
+        //     Self::Input::RemoveTunnel(idx) => {
+        //         let mut tunnels = self.tunnels.guard();
+        //         // self.tunnels.widget.selection
+        //         tunnels.remove(idx.current_index());
+        //     }
+        //     Self::Input::ImportTunnel(path) => {
+        //         let file_content = std::fs::read_to_string(&path);
+        //         let res = file_content.map(|c| parse_config(&c));
 
-                let Ok(Ok(mut config)) = res else {
-                    sender.input(Self::Input::Error(format!("{:#?}", res)));
-                    return;
-                };
+        //         let Ok(Ok(mut config)) = res else {
+        //             sender.input(Self::Input::Error(format!("{:#?}", res)));
+        //             return;
+        //         };
 
-                if config.interface.name.is_none() {
-                    config.interface.name = path
-                        .file_stem()
-                        .unwrap_or_else(|| todo!())
-                        .to_str()
-                        .map(|s| s.to_owned());
-                }
+        //         if config.interface.name.is_none() {
+        //             config.interface.name = path
+        //                 .file_stem()
+        //                 .unwrap_or_else(|| todo!())
+        //                 .to_str()
+        //                 .map(|s| s.to_owned());
+        //         }
 
-                sender.input(Self::Input::AddTunnel(Box::new(config)));
-            }
-            Self::Input::SaveConfigInitiate => self.overview.emit(OverviewInput::CollectTunnel),
-            Self::Input::SaveConfigFinish(config) => {
-                let Some(idx) = self.selected_tunnel_idx else {
-                    return;
-                };
-                if let Some(selected_tunnel) = self.tunnels.guard().get_mut(idx) {
-                    let new_tunnel = Tunnel::new(*config);
-                    if let Err(e) = fs::write(new_tunnel.path(), write_config(&new_tunnel.config)) {
-                        sender.input(Self::Input::Error(format!("{:#?}", e)));
-                        return;
-                    }
-                    *selected_tunnel = new_tunnel.clone();
-                }
-            }
-            Self::Input::AddPeer => {
-                self.overview.emit(OverviewInput::AddPeer);
-            }
-            Self::Input::ShowGenerator => {
-                self.generator.emit(GeneratorInput::Show);
-            }
-            Self::Input::Error(msg) => {
-                self.alert_dialog
-                    .state()
-                    .get_mut()
-                    .model
-                    .settings
-                    .secondary_text = Some(msg);
-                self.alert_dialog.emit(AlertMsg::Show);
-            }
-            Self::Input::Ignore => (),
-        }
+        //         sender.input(Self::Input::AddTunnel(Box::new(config)));
+        //     }
+        //     Self::Input::SaveConfigInitiate => self.overview.emit(OverviewInput::CollectTunnel),
+        //     Self::Input::SaveConfigFinish(config) => {
+        //         let Some(idx) = self.selected_tunnel_idx else {
+        //             return;
+        //         };
+        //         if let Some(selected_tunnel) = self.tunnels.guard().get_mut(idx) {
+        //             let new_tunnel = Tunnel::new(*config);
+        //             if let Err(e) = fs::write(new_tunnel.path(), write_config(&new_tunnel.config)) {
+        //                 sender.input(Self::Input::Error(format!("{:#?}", e)));
+        //                 return;
+        //             }
+        //             *selected_tunnel = new_tunnel.clone();
+        //         }
+        //     }
+        //     Self::Input::AddPeer => {
+        //         self.overview.emit(OverviewInput::AddPeer);
+        //     }
+        //     Self::Input::ShowGenerator => {
+        //         self.generator.emit(GeneratorInput::Show);
+        //     }
+        //     Self::Input::Error(msg) => {
+        //         self.alert_dialog
+        //             .state()
+        //             .get_mut()
+        //             .model
+        //             .settings
+        //             .secondary_text = Some(msg);
+        //         self.alert_dialog.emit(AlertMsg::Show);
+        //     }
+        //     Self::Input::Ignore => (),
+        // }
     }
 }
 
 fn main() {
-    karen::builder().wrapper("pkexec").with_env(&["DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "PATH"]).unwrap();
+    // karen::builder().wrapper("pkexec").with_env(&["DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "PATH"]).unwrap();
 
     let app = RelmApp::new("relm4.ghaf.wireguard-gui");
     app.run::<App>(());
