@@ -11,8 +11,8 @@
       let pkgs = nixpkgs.legacyPackages.${system}; in
       {
         packages = rec {
-          wireguird = pkgs.callPackage ./default.nix {};
-          default = wireguird;
+          wireguard-gui = pkgs.callPackage ./default.nix {};
+          default = wireguard-gui;
         };
 
         devShells.default = import ./shell.nix {inherit pkgs;};

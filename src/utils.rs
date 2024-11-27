@@ -64,3 +64,14 @@ pub fn generate_public_key(priv_key: String) -> Result<String> {
             )
         })
 }
+
+pub fn generate_preshared_key() -> Result<String> {
+    let output = Command::new("wg")
+        .arg("genpsk")
+        .stdout(Stdio::piped())
+        .output()?;
+
+    String::from_utf8(output.stdout)
+        .map(|s| s.trim().into())
+        .map_err(|_| io::Error::other("Could not convert output of `wg genpsk` to utf-8 string."))
+}

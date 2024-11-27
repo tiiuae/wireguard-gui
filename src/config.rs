@@ -33,6 +33,7 @@ pub struct Peer {
     pub allowed_ips: Option<String>,
     pub endpoint: Option<String>,
     pub public_key: Option<String>,
+    pub preshared_key: Option<String>,
     pub persistent_keepalive: Option<String>,
 }
 
@@ -112,6 +113,7 @@ pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
                         "AllowedIPs" => tmp_peer.allowed_ips = Some(value),
                         "Endpoint" => tmp_peer.endpoint = Some(value),
                         "PublicKey" => tmp_peer.public_key = Some(value),
+                        "PresharedKey" => tmp_peer.preshared_key = Some(value),
                         "PersistentKeepalive" => tmp_peer.persistent_keepalive = Some(value),
                         k => return Err(format!("Unexpected Peer configuration key {}.", k)),
                     };
@@ -169,6 +171,7 @@ pub fn write_config(c: &WireguardConfig) -> String {
             peer.allowed_ips.clone().map(|v| ("AllowedIPs", v)),
             peer.endpoint.clone().map(|v| ("Endpoint", v)),
             peer.public_key.clone().map(|v| ("PublicKey", v)),
+            peer.preshared_key.clone().map(|v| ("PresharedKey", v)),
             peer.persistent_keepalive
                 .clone()
                 .map(|v| ("PersistentKeepalive", v)),
