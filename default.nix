@@ -15,5 +15,5 @@ rustPlatform.buildRustPackage rec {
     gtk4.dev
   ];
 
-  cargoSha256 = "sha256-rV+GAOd3BmbMZKDKRDFNzrSbi5IqptNoFo9wHRDBPT0=";
+  cargoSha256 = "sha256-XO/saJfdiawN8CF6oF5HqrvLBllNueFUiE+7A7XWC5M=";
 }
