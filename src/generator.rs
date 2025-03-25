@@ -152,7 +152,7 @@ impl SimpleComponent for GeneratorModel {
                 Ok(settings) => {
                     self.latest_generated_configs = Some(settings.generate());
                     self.save_dialog
-                        .emit(SaveDialogMsg::SaveAs(format!("clients.tar")))
+                        .emit(SaveDialogMsg::SaveAs("clients.tar".to_string()))
                 }
                 Err(e) => {
                     self.alert_dialog

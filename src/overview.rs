@@ -4,7 +4,7 @@ use relm4::{gtk::prelude::*, prelude::*};
 
 use crate::config::*;
 use crate::peer::*;
-
+use crate::utils;
 pub struct OverviewModel {
     interface: Interface,
     peers: FactoryVecDeque<PeerComp>,
@@ -113,14 +113,32 @@ impl SimpleComponent for OverviewModel {
                             }
                         },
                     },
+                         // TODO: Just show omitted
+                         attach[0, 3, 1, 1] = &gtk::Label {
+                            set_label: "PublicKey:",
+                            set_halign: gtk::Align::Start,
+                        },
+                        #[name = "public_key"]
+                        attach[1, 3, 1, 1] = &gtk::Label {
+                            #[watch]
+                            set_text: get_value(&model.interface.public_key),
+                            set_selectable: true,
+                            set_xalign: 0.0,
+                            // connect_editing_notify[sender] => move |l| {
+                            //     if !l.is_editing() {
+                            //         let new: String = l.text().trim().into();
+                            //         sender.input(Self::Input::SetInterface(InterfaceSetKind::PrivateKey, (new != "unknown").then_some(new)));
+                            //     }
+                            // },
+                        },
 
                     // TODO: Just show omitted
-                    attach[0, 3, 1, 1] = &gtk::Label {
+                    attach[0, 4, 1, 1] = &gtk::Label {
                         set_label: "PrivateKey:",
                         set_halign: gtk::Align::Start,
                     },
                     #[name = "private_key"]
-                    attach[1, 3, 1, 1] = &gtk::EditableLabel {
+                    attach[1, 4, 1, 1] = &gtk::EditableLabel {
                         #[watch]
                         set_text: get_value(&model.interface.private_key),
                         connect_editing_notify[sender] => move |l| {
@@ -131,12 +149,12 @@ impl SimpleComponent for OverviewModel {
                         },
                     },
 
-                    attach[0, 4, 1, 1] = &gtk::Label {
+                    attach[0, 5, 1, 1] = &gtk::Label {
                         set_label: "DNS:",
                         set_halign: gtk::Align::Start,
                     },
                     #[name = "dns"]
-                    attach[1, 4, 1, 1] = &gtk::EditableLabel {
+                    attach[1, 5, 1, 1] = &gtk::EditableLabel {
                         #[watch]
                         set_text: get_value(&model.interface.dns),
                         connect_editing_notify[sender] => move |l| {
@@ -147,12 +165,12 @@ impl SimpleComponent for OverviewModel {
                         },
                     },
 
-                    attach[0, 5, 1, 1] = &gtk::Label {
+                    attach[0, 6, 1, 1] = &gtk::Label {
                         set_label: "Table:",
                         set_halign: gtk::Align::Start,
                     },
                     #[name = "table"]
-                    attach[1, 5, 1, 1] = &gtk::EditableLabel {
+                    attach[1, 6, 1, 1] = &gtk::EditableLabel {
                         #[watch]
                         set_text: get_value(&model.interface.table),
                         connect_editing_notify[sender] => move |l| {
@@ -163,12 +181,12 @@ impl SimpleComponent for OverviewModel {
                         },
                     },
 
-                    attach[0, 6, 1, 1] = &gtk::Label {
+                    attach[0, 7, 1, 1] = &gtk::Label {
                         set_label: "MTU:",
                         set_halign: gtk::Align::Start,
                     },
                     #[name = "mtu"]
-                    attach[1, 6, 1, 1] = &gtk::EditableLabel {
+                    attach[1, 7, 1, 1] = &gtk::EditableLabel {
                         #[watch]
                         set_text: get_value(&model.interface.mtu),
                         connect_editing_notify[sender] => move |l| {
@@ -179,12 +197,12 @@ impl SimpleComponent for OverviewModel {
                         },
                     },
 
-                    attach[0, 7, 1, 1] = &gtk::Label {
+                    attach[0, 8, 1, 1] = &gtk::Label {
                         set_label: "PreUp:",
                         set_halign: gtk::Align::Start,
                     },
                     #[name = "pre_up"]
-                    attach[1, 7, 1, 1] = &gtk::EditableLabel {
+                    attach[1, 8, 1, 1] = &gtk::EditableLabel {
                         #[watch]
                         set_text: get_value(&model.interface.pre_up),
                         connect_editing_notify[sender] => move |l| {
@@ -195,12 +213,12 @@ impl SimpleComponent for OverviewModel {
                         },
                     },
 
-                    attach[0, 8, 1, 1] = &gtk::Label {
+                    attach[0, 9, 1, 1] = &gtk::Label {
                         set_label: "PostUp:",
                         set_halign: gtk::Align::Start,
                     },
                     #[name = "post_up"]
-                    attach[1, 8, 1, 1] = &gtk::EditableLabel {
+                    attach[1, 9, 1, 1] = &gtk::EditableLabel {
                         #[watch]
                         set_text: get_value(&model.interface.post_up),
                         connect_editing_notify[sender] => move |l| {
@@ -211,12 +229,12 @@ impl SimpleComponent for OverviewModel {
                         },
                     },
 
-                    attach[0, 9, 1, 1] = &gtk::Label {
+                    attach[0, 10, 1, 1] = &gtk::Label {
                         set_label: "PreDown:",
                         set_halign: gtk::Align::Start,
                     },
                     #[name = "pre_down"]
-                    attach[1, 9, 1, 1] = &gtk::EditableLabel {
+                    attach[1, 10, 1, 1] = &gtk::EditableLabel {
                         #[watch]
                         set_text: get_value(&model.interface.pre_down),
                         connect_editing_notify[sender] => move |l| {
@@ -227,12 +245,12 @@ impl SimpleComponent for OverviewModel {
                         },
                     },
 
-                    attach[0, 10, 1, 1] = &gtk::Label {
+                    attach[0, 11, 1, 1] = &gtk::Label {
                         set_label: "PostDown:",
                         set_halign: gtk::Align::Start,
                     },
                     #[name = "post_down"]
-                    attach[1, 10, 1, 1] = &gtk::EditableLabel {
+                    attach[1, 11, 1, 1] = &gtk::EditableLabel {
                         #[watch]
                         set_text: get_value(&model.interface.post_down),
                         connect_editing_notify[sender] => move |l| {
@@ -300,7 +318,15 @@ impl SimpleComponent for OverviewModel {
                 InterfaceSetKind::Name => self.interface.name = value,
                 InterfaceSetKind::Address => self.interface.address = value,
                 InterfaceSetKind::ListenPort => self.interface.listen_port = value,
-                InterfaceSetKind::PrivateKey => self.interface.private_key = value,
+                InterfaceSetKind::PrivateKey => {
+                    //TODO: this should be removed in next release
+                    self.interface.public_key = Some(
+                        utils::generate_public_key(value.clone().unwrap_or_default())
+                            .unwrap_or("Wrong private key".to_string()),
+                    );
+                    println!("public key: {:?}", self.interface.public_key);
+                    self.interface.private_key = value
+                }
                 InterfaceSetKind::Dns => self.interface.dns = value,
                 InterfaceSetKind::Table => self.interface.table = value,
                 InterfaceSetKind::Mtu => self.interface.mtu = value,
