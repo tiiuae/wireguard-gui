@@ -1,3 +1,7 @@
+/*
+    Copyright 2025 TII (SSRC) and the contributors
+    SPDX-License-Identifier: Apache-2.0
+*/
 use std::{fs, path::PathBuf};
 
 use gtk::prelude::*;
@@ -7,7 +11,9 @@ use relm4_components::alert::*;
 use relm4_components::open_button::{OpenButton, OpenButtonSettings};
 use relm4_components::open_dialog::OpenDialogSettings;
 
-use wireguard_gui::{config::*, generator::*, overview::*, tunnel::*};
+use log::{debug, error};
+use syslog::{BasicLogger, Facility, Formatter3164};
+use wireguard_gui::{cli::*, config::*, generator::*, overview::*, tunnel::*};
 
 struct App {
     tunnels: FactoryVecDeque<Tunnel>,
@@ -130,7 +136,7 @@ impl SimpleComponent for App {
                 }
             }
             Err(err) => {
-                eprintln!("Could not load existing configurations: {:#?}", err);
+                error!("Could not load existing configurations: {:#?}", err);
             }
         };
 
@@ -172,13 +178,11 @@ impl SimpleComponent for App {
         let alert_dialog = Alert::builder()
             .transient_for(&root)
             .launch(AlertSettings {
-                text: String::from("Error"),
-                secondary_text: None,
-                confirm_label: None,
+                text: Some(String::from("Error")),
                 cancel_label: Some(String::from("Ok")),
-                option_label: None,
                 is_modal: true,
                 destructive_accept: true,
+                ..Default::default()
             })
             .forward(sender.input_sender(), |_| Self::Input::Ignore);
 
@@ -193,11 +197,17 @@ impl SimpleComponent for App {
 
         let tunnels_list_box = model.tunnels.widget();
 
-        tunnels_list_box.connect_row_selected(gtk::glib::clone!(@strong sender => move |_, row| {
-            if let Some(lbr) = row {
-                sender.input_sender().emit(AppMsg::ShowOverview(lbr.index().try_into().unwrap()));
+        tunnels_list_box.connect_row_selected(gtk::glib::clone!(
+            #[strong]
+            sender,
+            move |_, row| {
+                if let Some(lbr) = row {
+                    sender
+                        .input_sender()
+                        .emit(AppMsg::ShowOverview(lbr.index().try_into().unwrap()));
+                }
             }
-        }));
+        ));
 
         let widgets = view_output!();
 
@@ -290,7 +300,8 @@ impl SimpleComponent for App {
                     .model
                     .settings
                     .secondary_text = Some(msg);
-                self.alert_dialog.state().get_mut().model.settings.text = String::from("Error");
+                self.alert_dialog.state().get_mut().model.settings.text =
+                    Some(String::from("Error"));
 
                 self.alert_dialog.emit(AlertMsg::Show);
             }
@@ -301,7 +312,8 @@ impl SimpleComponent for App {
                     .model
                     .settings
                     .secondary_text = Some(msg);
-                self.alert_dialog.state().get_mut().model.settings.text = String::from("Info");
+                self.alert_dialog.state().get_mut().model.settings.text =
+                    Some(String::from("Info"));
                 self.alert_dialog.emit(AlertMsg::Show);
             }
             Self::Input::Ignore => (),
@@ -310,6 +322,8 @@ impl SimpleComponent for App {
 }
 
 fn main() {
+    initialize_logger(get_log_output(), get_log_level());
+
     karen::builder()
         .wrapper("pkexec")
         .with_env(&[
@@ -325,4 +339,41 @@ fn main() {
 
     let app = RelmApp::new("relm4.ghaf.wireguard-gui");
     app.run::<App>(());
+}
+
+/// Initializes the logging system based on the selected feature and runtime configuration.
+///
+///   Configures either `stdout` logging or `syslog` based on user input.
+///   Panics if an invalid log output is specified.
+fn initialize_logger(log_output: &LogOutput, log_level: &log::Level) {
+    let log_level = log_level.to_level_filter();
+
+    match log_output {
+        LogOutput::Stdout => {
+            println!("Redirecting logger to stdout");
+            env_logger::Builder::new().filter_level(log_level).init();
+        }
+        LogOutput::Syslog => {
+            println!("Redirecting logger to syslog");
+            let formatter = Formatter3164 {
+                facility: Facility::LOG_USER,
+                hostname: None,
+                process: "wireguard-gui".into(),
+                pid: 0,
+            };
+
+            let logger = match syslog::unix(formatter) {
+                Err(e) => {
+                    panic!("failed to connect to syslog: {e}");
+                }
+                Ok(logger) => logger,
+            };
+
+            log::set_boxed_logger(Box::new(BasicLogger::new(logger)))
+                .expect("Failed to set logger");
+            log::set_max_level(log_level);
+        }
+    }
+
+    debug!("Logger initialized");
 }

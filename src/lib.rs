@@ -15,3 +15,6 @@ pub mod peer;
 pub mod tunnel;
 /// Various utility functions
 pub mod utils;
+
+/// CLI interface for the application.
+pub mod cli;

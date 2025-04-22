@@ -1,3 +1,7 @@
+/*
+    Copyright 2025 TII (SSRC) and the contributors
+    SPDX-License-Identifier: Apache-2.0
+*/
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -117,13 +121,11 @@ impl SimpleComponent for GeneratorModel {
         let alert_dialog = Alert::builder()
             .transient_for(&root)
             .launch(AlertSettings {
-                text: String::from("Error"),
-                secondary_text: None,
-                confirm_label: None,
+                text: Some(String::from("Error")),
                 cancel_label: Some(String::from("Ok")),
-                option_label: None,
                 is_modal: true,
                 destructive_accept: true,
+                ..Default::default()
             })
             .forward(sender.input_sender(), |_| Self::Input::Ignore);
 

@@ -1,3 +1,7 @@
+/*
+    Copyright 2025 TII (SSRC) and the contributors
+    SPDX-License-Identifier: Apache-2.0
+*/
 use std::fs;
 use std::io;
 use std::path::PathBuf;

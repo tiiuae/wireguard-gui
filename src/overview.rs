@@ -1,3 +1,8 @@
+/*
+    Copyright 2025 TII (SSRC) and the contributors
+    SPDX-License-Identifier: Apache-2.0
+*/
+
 // use gtk::prelude::*;
 use relm4::factory::{DynamicIndex, FactoryVecDeque};
 use relm4::{gtk::prelude::*, prelude::*};
@@ -5,6 +10,7 @@ use relm4::{gtk::prelude::*, prelude::*};
 use crate::config::*;
 use crate::peer::*;
 use crate::utils;
+use log::debug;
 pub struct OverviewModel {
     interface: Interface,
     peers: FactoryVecDeque<PeerComp>,
@@ -324,7 +330,7 @@ impl SimpleComponent for OverviewModel {
                         utils::generate_public_key(value.clone().unwrap_or_default())
                             .unwrap_or("Wrong private key".to_string()),
                     );
-                    println!("public key: {:?}", self.interface.public_key);
+                    debug!("public key: {:?}", self.interface.public_key);
                     self.interface.private_key = value
                 }
                 InterfaceSetKind::Dns => self.interface.dns = value,
