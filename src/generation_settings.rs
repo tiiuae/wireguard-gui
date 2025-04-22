@@ -1,3 +1,7 @@
+/*
+    Copyright 2025 TII (SSRC) and the contributors
+    SPDX-License-Identifier: Apache-2.0
+*/
 use std::{collections::HashMap, convert::TryFrom};
 
 use cidr::IpCidr;

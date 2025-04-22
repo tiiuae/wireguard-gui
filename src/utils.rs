@@ -1,10 +1,14 @@
+/*
+    Copyright 2025 TII (SSRC) and the contributors
+    SPDX-License-Identifier: Apache-2.0
+*/
 use crate::config::{parse_config, WireguardConfig};
+use log::*;
 use std::fs;
 use std::io::{self, Error, Read, Result, Write};
 use std::process::*;
 use std::time::Duration;
 use wait_timeout::ChildExt;
-
 pub const TUNNELS_PATH: &str = "/etc/wireguard";
 
 pub fn load_existing_configurations() -> Result<Vec<WireguardConfig>> {
@@ -71,33 +75,46 @@ pub fn generate_public_key(priv_key: String) -> Result<String> {
 }
 
 /// Run a command with a timeout and return the exit status and stdout output.
-pub fn run_cmd_with_timeout(cmd: &mut Child, timeout: u64) -> io::Result<(Option<i32>, String)> {
-    let one_sec = Duration::from_secs(timeout);
-    println!("Running command: {:?}", cmd);
+pub fn wait_cmd_with_timeout(
+    mut cmd: Child,
+    timeout: u64,
+    cmd_str: Option<&str>,
+) -> io::Result<(Option<i32>, String)> {
+    let timeout = Duration::from_secs(timeout);
+
     // Wait for the process to exit or timeout
-    let status_code = match cmd.wait_timeout(one_sec)? {
+    let status_code = match cmd.wait_timeout(timeout)? {
         Some(status) => {
             cmd.kill()?;
             status.code()
         }
         None => {
             // Process hasn't exited yet, kill it and get the status code
-            println!("Killing the process: {:?}", cmd);
+            debug!("Killing the process: {:?}", cmd);
             cmd.kill()?;
             cmd.wait()?.code()
         }
     };
 
     // Read stdout after killing the process
-    let mut s = String::new();
+    let mut cmd_response = String::new();
 
-    // Borrow stdout and read the output into `s`
+    // Borrow stdout and read the output into `cmd_response`
     if let Some(stdout) = cmd.stdout.as_mut() {
-        stdout.read_to_string(&mut s)?;
+        stdout.read_to_string(&mut cmd_response)?;
     }
 
-    // Print the output line-by-line
-    println!("Status code: {:?},output:{:?}", status_code, s);
+    if let (Some(cmd_str), Some(status_code)) = (cmd_str, status_code) {
+        if status_code != 0 {
+            error!(
+                "Cmd: {} failed with status code: {status_code},response:{cmd_response}",
+                cmd_str
+            );
+        } else {
+            debug!("Cmd: {} is successful ,response:{cmd_response}", cmd_str);
+        }
+    }
+
     // Return both the status code and the output
-    Ok((status_code, s))
+    Ok((status_code, cmd_response))
 }
