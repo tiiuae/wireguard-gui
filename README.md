@@ -1,3 +1,3 @@
 # wireguard-gui
 
-Ui for configuring wireguard in Ghaf
+UI for configuring wireguard in Ghaf
