@@ -5,8 +5,8 @@
 use clap::Parser;
 use clap::ValueEnum;
 use lazy_static::lazy_static;
+use std::path::PathBuf;
 use std::str;
-
 lazy_static! {
     static ref CLI_ARGS: Args = {
         let args = Args::parse();
@@ -35,12 +35,36 @@ struct Args {
     /// Log output
     #[arg(long, value_enum, default_value_t)]
     pub log_output: LogOutput,
+
+    /// Path to the Wireguard config files
+    #[arg(long, default_value = "/etc/wireguard")]
+    config_dir: PathBuf,
+
+    /// Owner of the config files
+    #[arg(long, default_value = "root")]
+    pub config_owner: String,
+
+    /// Owner group of the config files
+    #[arg(long, default_value = "root")]
+    pub config_owner_group: String,
 }
 
-pub fn get_log_level() -> &'static log::Level {
-    &CLI_ARGS.log_level
+pub fn get_log_level_output() -> log::Level {
+    CLI_ARGS.log_level
 }
 
-pub fn get_log_output() -> &'static LogOutput {
-    &CLI_ARGS.log_output
+pub fn get_log_output() -> LogOutput {
+    CLI_ARGS.log_output
+}
+
+pub fn get_configs_dir() -> &'static PathBuf {
+    &CLI_ARGS.config_dir
+}
+
+pub fn get_config_file_owner() -> &'static str {
+    &CLI_ARGS.config_owner
+}
+
+pub fn get_config_file_owner_group() -> &'static str {
+    &CLI_ARGS.config_owner_group
 }

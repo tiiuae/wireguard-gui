@@ -3,6 +3,8 @@
     SPDX-License-Identifier: Apache-2.0
 */
 
+use std::path::PathBuf;
+
 // use gtk::prelude::*;
 use relm4::factory::{DynamicIndex, FactoryVecDeque};
 use relm4::{gtk::prelude::*, prelude::*};
@@ -44,7 +46,7 @@ pub enum InterfaceSetKind {
 
 #[derive(Debug)]
 pub enum OverviewInput {
-    CollectTunnel,
+    CollectTunnel(Option<PathBuf>),
     ShowConfig(Box<WireguardConfig>),
     RemovePeer(DynamicIndex),
     AddPeer,
@@ -53,7 +55,8 @@ pub enum OverviewInput {
 
 #[derive(Debug)]
 pub enum OverviewOutput {
-    SaveConfig(Box<WireguardConfig>),
+    SaveConfig(Box<WireguardConfig>, Option<PathBuf>),
+    Error(String),
 }
 
 #[relm4::component(pub)]
@@ -298,14 +301,15 @@ impl SimpleComponent for OverviewModel {
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
         match msg {
-            Self::Input::CollectTunnel => {
+            Self::Input::CollectTunnel(path) => {
                 let cfg = WireguardConfig {
                     interface: self.interface.clone(),
                     peers: self.peers.iter().map(|p| p.peer.clone()).collect(),
                 };
+
                 sender
                     .output_sender()
-                    .emit(Self::Output::SaveConfig(Box::new(cfg)));
+                    .emit(Self::Output::SaveConfig(Box::new(cfg), path));
             }
             Self::Input::ShowConfig(config) => {
                 let WireguardConfig { interface, peers } = *config;
@@ -322,16 +326,33 @@ impl SimpleComponent for OverviewModel {
             }
             Self::Input::SetInterface(kind, value) => match kind {
                 InterfaceSetKind::Name => self.interface.name = value,
-                InterfaceSetKind::Address => self.interface.address = value,
+                InterfaceSetKind::Address => {
+                    if !utils::is_ip_valid(value.as_deref()) {
+                        sender
+                            .output_sender()
+                            .emit(Self::Output::Error("Invalid IP address".to_string()));
+                        return;
+                    }
+                    self.interface.address = value;
+                }
                 InterfaceSetKind::ListenPort => self.interface.listen_port = value,
                 InterfaceSetKind::PrivateKey => {
-                    //TODO: this should be removed in next release
-                    self.interface.public_key = Some(
-                        utils::generate_public_key(value.clone().unwrap_or_default())
-                            .unwrap_or("Wrong private key".to_string()),
-                    );
+                    let Some(private_key) = value.clone() else {
+                        return;
+                    };
+                    let public_key = match utils::generate_public_key(private_key.clone()) {
+                        Ok(key) => key,
+                        Err(e) => {
+                            sender
+                                .output_sender()
+                                .emit(Self::Output::Error(e.to_string()));
+                            return;
+                        }
+                    };
+                    self.interface.public_key = Some(public_key);
+                    self.interface.private_key = value;
+
                     debug!("public key: {:?}", self.interface.public_key);
-                    self.interface.private_key = value
                 }
                 InterfaceSetKind::Dns => self.interface.dns = value,
                 InterfaceSetKind::Table => self.interface.table = value,

@@ -63,10 +63,9 @@ impl FactoryComponent for Field {
     ) {
         match msg {
             Self::Input::UpdateValue => {
-                let text = widgets.input.buffer().text().trim().to_string();
-                if !text.is_empty() {
-                    self.value = Some(text);
-                }
+                self.value = Some(widgets.input.buffer().text().trim())
+                    .filter(|s| !s.is_empty())
+                    .map(Into::into);
             }
         }
     }

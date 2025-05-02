@@ -2,19 +2,19 @@
     Copyright 2025 TII (SSRC) and the contributors
     SPDX-License-Identifier: Apache-2.0
 */
-use std::{fs, path::PathBuf};
-
 use gtk::prelude::*;
+use log::{debug, error, info};
+use nix::unistd::chown;
 use relm4::factory::{DynamicIndex, FactoryVecDeque};
 use relm4::prelude::*;
 use relm4_components::alert::*;
 use relm4_components::open_button::{OpenButton, OpenButtonSettings};
 use relm4_components::open_dialog::OpenDialogSettings;
-
-use log::{debug, error};
+use relm4_components::save_dialog::*;
+use std::os::unix::fs::MetadataExt;
+use std::{fs, path::PathBuf};
 use syslog::{BasicLogger, Facility, Formatter3164};
 use wireguard_gui::{cli::*, config::*, generator::*, overview::*, tunnel::*};
-
 struct App {
     tunnels: FactoryVecDeque<Tunnel>,
     selected_tunnel_idx: Option<usize>,
@@ -22,6 +22,7 @@ struct App {
     generator: Controller<GeneratorModel>,
     import_button: Controller<OpenButton>,
     alert_dialog: Controller<Alert>,
+    export_dialog: Controller<SaveDialog>,
 }
 
 #[derive(Debug)]
@@ -31,9 +32,10 @@ enum AppMsg {
     RemoveTunnel(DynamicIndex),
     ImportTunnel(PathBuf),
     SaveConfigInitiate,
-    SaveConfigFinish(Box<WireguardConfig>),
+    SaveConfigFinish(Box<WireguardConfig>, Option<PathBuf>),
     AddPeer,
-    #[allow(dead_code)]
+    ExportConfigInitiate,
+    ExportConfigFinish(PathBuf),
     ShowGenerator,
     Error(String),
     Info(String),
@@ -73,12 +75,12 @@ impl SimpleComponent for App {
                         //     connect_clicked => Self::Input::AddTunnel(Box::default()),
                         // },
 
-                        append: model.import_button.widget()
+                        append: model.import_button.widget(),
 
-                        // gtk::Button {
-                        //     set_label: "Generate Configs",
-                        //     connect_clicked => Self::Input::ShowGenerator,
-                        // }
+                        gtk::Button {
+                            set_label: "Generate Configs",
+                            connect_clicked => Self::Input::ShowGenerator,
+                        }
                     },
                 },
                 #[wrap(Some)]
@@ -106,6 +108,11 @@ impl SimpleComponent for App {
                             gtk::Button {
                                 set_label: "Add Peer",
                                 connect_clicked => Self::Input::AddPeer,
+                            },
+
+                            gtk::Button {
+                                set_label: "Export",
+                                connect_clicked => Self::Input::ExportConfigInitiate,
                             },
                         }
                     }
@@ -150,7 +157,8 @@ impl SimpleComponent for App {
                     is_modal: true,
                     filters: vec![{
                         let filter = gtk::FileFilter::new();
-                        filter.add_pattern("*.conf");
+                        filter.set_name(Some("wireguard config files"));
+                        filter.add_pattern("*.conf"); // Specific to .conf files
                         filter
                     }],
                 },
@@ -160,10 +168,31 @@ impl SimpleComponent for App {
             })
             .forward(sender.input_sender(), Self::Input::ImportTunnel);
 
+        let export_dialog = SaveDialog::builder()
+            .launch(SaveDialogSettings {
+                accept_label: String::from("Export"),
+                cancel_label: String::from("Cancel"),
+                create_folders: true,
+                is_modal: true,
+                filters: vec![{
+                    let filter = gtk::FileFilter::new();
+                    filter.set_name(Some("wireguard config files"));
+                    filter.add_pattern("*.conf"); // Specific to .conf files
+                    filter
+                }],
+            })
+            .forward(sender.input_sender(), |response| match response {
+                SaveDialogResponse::Accept(path) => Self::Input::ExportConfigFinish(path),
+                SaveDialogResponse::Cancel => Self::Input::Ignore,
+            });
+
         let overview = OverviewModel::builder()
             .launch(WireguardConfig::default())
             .forward(sender.input_sender(), |msg| match msg {
-                OverviewOutput::SaveConfig(config) => Self::Input::SaveConfigFinish(config),
+                OverviewOutput::SaveConfig(config, path) => {
+                    Self::Input::SaveConfigFinish(config, path)
+                }
+                OverviewOutput::Error(msg) => Self::Input::Error(msg),
             });
 
         let generator =
@@ -193,6 +222,7 @@ impl SimpleComponent for App {
             overview,
             generator,
             alert_dialog,
+            export_dialog,
         };
 
         let tunnels_list_box = model.tunnels.widget();
@@ -239,52 +269,147 @@ impl SimpleComponent for App {
                 tunnels.push_back(*config);
             }
             Self::Input::RemoveTunnel(idx) => {
+                // 1) Lock and inspect the list
                 let mut tunnels = self.tunnels.guard();
-                // self.tunnels.widget.selection
+                if let Some(tunnel) = tunnels.get(idx.current_index()) {
+                    let path = tunnel.path();
+
+                    // 2) Attempt to delete the file
+                    match fs::remove_file(&path) {
+                        Ok(()) => {
+                            log::info!("Deleted config file {}", path.display());
+                            sender.input(Self::Input::Info(format!(
+                                "Deleted config file {}",
+                                path.display()
+                            )));
+                        }
+                        Err(e) => {
+                            // Other I/O errors (permission, in‑use, etc.)
+                            log::error!("Failed to delete {}: {}", path.display(), e);
+                            sender.input(Self::Input::Error(format!(
+                                "Failed to delete {}: {}",
+                                path.display(),
+                                e
+                            )));
+                            return;
+                        }
+                    }
+                }
+
+                // 3) Now remove it from the in‑memory list
                 tunnels.remove(idx.current_index());
             }
             Self::Input::ImportTunnel(path) => {
                 let file_content = std::fs::read_to_string(&path);
-                let res = file_content.map(|c| parse_config(&c));
+                let res = file_content.as_ref().map(|c| parse_config(c));
 
                 let Ok(Ok(mut config)) = res else {
-                    sender.input(Self::Input::Error(format!("{:#?}", res)));
+                    sender.input(Self::Input::Error(format!("{res:#?}")));
                     return;
                 };
 
                 if config.interface.name.is_none() {
-                    config.interface.name = path
-                        .file_stem()
-                        .unwrap_or_else(|| todo!())
-                        .to_str()
-                        .map(|s| s.to_owned());
+                    let name = path.file_stem().and_then(|s| s.to_str().map(str::to_owned));
+
+                    match name {
+                        Some(name) => config.interface.name = Some(name),
+                        None => {
+                            sender.input(Self::Input::Error(format!(
+                                "Invalid file name: {}",
+                                path.display()
+                            )));
+                            return;
+                        }
+                    }
+                }
+
+                let cfg_path = wireguard_gui::cli::get_configs_dir()
+                    .join(format!("{}.conf", config.interface.name.as_ref().unwrap()));
+
+                if let Err(e) = write_configs_to_path(&[&config], &cfg_path) {
+                    sender.input(Self::Input::Error(format!(
+                        "Error writing config to file: {e}"
+                    )));
+                    return;
                 }
 
                 sender.input(Self::Input::AddTunnel(Box::new(config)));
             }
-            Self::Input::SaveConfigInitiate => self.overview.emit(OverviewInput::CollectTunnel),
-            Self::Input::SaveConfigFinish(config) => {
+            Self::Input::SaveConfigInitiate => {
+                self.overview.emit(OverviewInput::CollectTunnel(None));
+            }
+            Self::Input::ExportConfigInitiate => self
+                .export_dialog
+                .emit(SaveDialogMsg::SaveAs("my_export.conf".into())),
+
+            Self::Input::SaveConfigFinish(config, path) => {
+                let is_path_none = path.is_none();
                 let Some(idx) = self.selected_tunnel_idx else {
                     return;
                 };
                 if let Some(selected_tunnel) = self.tunnels.guard().get_mut(idx) {
                     if selected_tunnel.active {
                         sender.input(Self::Input::Error(
-                            "Tunnel should be disabled before saving the configuration".to_string(),
+                            "Tunnel should be disabled before saving the configuration".into(),
                         ));
                         return;
                     }
                     let new_tunnel = Tunnel::new(*config);
-                    if let Err(e) = fs::write(new_tunnel.path(), write_config(&new_tunnel.config)) {
-                        sender.input(Self::Input::Error(format!("{:#?}", e)));
+                    let path = match path {
+                        Some(p)
+                            if p.starts_with("/home") && p.parent().is_some_and(|p| p.is_dir()) =>
+                        {
+                            p
+                        }
+                        Some(_) => {
+                            sender.input(Self::Input::Error(
+                                "Config file can be exported only under 'home' directory".into(),
+                            ));
+                            return;
+                        }
+                        None => new_tunnel.path(),
+                    };
+
+                    if let Err(e) = fs::write(path.clone(), write_config(&new_tunnel.config)) {
+                        sender.input(Self::Input::Error(format!("{e}")));
                         return;
                     }
-                    sender.input(Self::Input::Info(format!(
-                        "Configuration saved to {:#?}",
-                        new_tunnel.path()
-                    )));
 
-                    *selected_tunnel = new_tunnel.clone();
+                    // Change ownership of the file to the parent directory's UID and GID
+                    let (uid, guid) = match path.parent().and_then(|p| fs::metadata(p).ok()) {
+                        Some(metadata) => (metadata.uid(), metadata.gid()),
+                        None => {
+                            sender.input(Self::Input::Error(format!(
+                                "Could not get metadata for path: {}",
+                                path.display()
+                            )));
+                            return;
+                        }
+                    };
+
+                    info!(
+                        "Setting export config Path: {}, UID: {}, GID: {}",
+                        path.display(),
+                        uid,
+                        guid
+                    );
+
+                    if let Err(e) = chown(&path, Some(uid.into()), Some(guid.into())) {
+                        sender.input(Self::Input::Error(format!(
+                            "Failed to change ownership of {}: {}",
+                            path.display(),
+                            e
+                        )));
+                        return;
+                    }
+
+                    sender.input(Self::Input::Info(format!(
+                        "Configuration saved to {}",
+                        path.display()
+                    )));
+                    if is_path_none {
+                        selected_tunnel.update_from(new_tunnel);
+                    }
                 }
             }
             Self::Input::AddPeer => {
@@ -292,6 +417,9 @@ impl SimpleComponent for App {
             }
             Self::Input::ShowGenerator => {
                 self.generator.emit(GeneratorInput::Show);
+            }
+            Self::Input::ExportConfigFinish(path) => {
+                self.overview.emit(OverviewInput::CollectTunnel(Some(path)));
             }
             Self::Input::Error(msg) => {
                 self.alert_dialog
@@ -322,7 +450,7 @@ impl SimpleComponent for App {
 }
 
 fn main() {
-    initialize_logger(get_log_output(), get_log_level());
+    initialize_logger(get_log_output(), get_log_level_output());
 
     karen::builder()
         .wrapper("pkexec")
@@ -336,8 +464,9 @@ fn main() {
             "PATH",
         ])
         .unwrap();
+    let empty: Vec<String> = vec![];
+    let app = RelmApp::new("relm4.ghaf.wireguard-gui").with_args(empty);
 
-    let app = RelmApp::new("relm4.ghaf.wireguard-gui");
     app.run::<App>(());
 }
 
@@ -345,7 +474,7 @@ fn main() {
 ///
 ///   Configures either `stdout` logging or `syslog` based on user input.
 ///   Panics if an invalid log output is specified.
-fn initialize_logger(log_output: &LogOutput, log_level: &log::Level) {
+fn initialize_logger(log_output: LogOutput, log_level: log::Level) {
     let log_level = log_level.to_level_filter();
 
     match log_output {

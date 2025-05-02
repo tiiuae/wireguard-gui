@@ -2,25 +2,22 @@
     Copyright 2025 TII (SSRC) and the contributors
     SPDX-License-Identifier: Apache-2.0
 */
-use std::collections::HashMap;
-use std::path::PathBuf;
-
-use relm4::{gtk::prelude::*, prelude::*};
-use relm4_components::{alert::*, save_dialog::*};
-
 use crate::{
+    cli,
     config::{write_configs_to_path, WireguardConfig},
     fields::*,
     generation_settings::*,
 };
+use relm4::{gtk::prelude::*, prelude::*};
+use relm4_components::alert::*;
+use std::collections::HashMap;
 
 #[derive(Debug)]
 pub struct GeneratorModel {
     fields: Controller<Fields>,
     visible: bool,
-    save_dialog: Controller<SaveDialog>,
     // XXX: I haven't found simpler way to store state required to save generated configs.
-    latest_generated_configs: Option<Vec<WireguardConfig>>,
+    latest_generated_configs: Option<WireguardConfig>,
     alert_dialog: Controller<Alert>,
 }
 
@@ -33,8 +30,6 @@ pub enum GeneratorInput {
     AskForFieldsMap,
     #[doc(hidden)]
     Generate(HashMap<String, Option<String>>),
-    #[doc(hidden)]
-    SaveGeneratedInPath(PathBuf),
     #[doc(hidden)]
     Ignore,
 }
@@ -77,19 +72,23 @@ impl SimpleComponent for GeneratorModel {
     }
 
     fn init(
-        _: Self::Init,
+        (): Self::Init,
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
         let fields_description = vec![
-            ("Listen Port".into(), Some("51820".into())),
-            ("Number of Clients".into(), Some("3".into())),
-            ("CIDR".into(), Some("10.0.0.0/24".into())),
-            ("Client Allowed IPs".into(), Some("0.0.0.0/0, ::/0".into())),
-            ("Endpoint (Optional)".into(), Some("myserver.dyndns.org:51820".into())),
+            ("Tunnel interface name".into(), None),
+            ("Tunnel interface ip".into(), None),
+            ("Listen Port [default:51820]".into(), Some("51820".into())),
+            ("Number of Peers [default:1]".into(), Some("1".into())),
+            /*   ("Client Allowed IPs".into(), Some("0.0.0.0/0, ::/0".into())),
+            (
+                "Endpoint (Optional)".into(),
+                Some("<peer public ip>:51820".into()),
+            ), */
             // ("DNS (Optional)".into(), Some("DNS (Optional)".into())),
-            ("Post-Up rule (Optional)".into(), Some("iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE".into())),
-            ("Post-Down rule (Optional)".into(), Some("iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE".into()))
+            ("Post-Up rule (Optional)".into(), None),
+            ("Post-Down rule (Optional)".into(), None),
         ];
         let fields_settings = FieldsSettings { fields_description };
         let fields = Fields::builder().launch(fields_settings).forward(
@@ -98,25 +97,6 @@ impl SimpleComponent for GeneratorModel {
                 FieldsOutput::FieldsMap(map) => Self::Input::Generate(map),
             },
         );
-
-        let save_dialog = SaveDialog::builder()
-            .transient_for_native(&root)
-            .launch(SaveDialogSettings {
-                accept_label: String::from("Export"),
-                cancel_label: String::from("Cancel"),
-                create_folders: true,
-                is_modal: true,
-                filters: vec![{
-                    let filter = gtk::FileFilter::new();
-                    filter.add_mime_type("application/x-tar");
-                    // filter.add_pattern("*.tar");
-                    filter
-                }],
-            })
-            .forward(sender.input_sender(), |response| match response {
-                SaveDialogResponse::Accept(path) => Self::Input::SaveGeneratedInPath(path),
-                SaveDialogResponse::Cancel => Self::Input::Ignore,
-            });
 
         let alert_dialog = Alert::builder()
             .transient_for(&root)
@@ -132,7 +112,6 @@ impl SimpleComponent for GeneratorModel {
         let model = Self {
             visible: false,
             fields,
-            save_dialog,
             latest_generated_configs: None,
             alert_dialog,
         };
@@ -143,38 +122,52 @@ impl SimpleComponent for GeneratorModel {
     }
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
+        let ui_error = |e: String| {
+            self.alert_dialog
+                .state()
+                .get_mut()
+                .model
+                .settings
+                .secondary_text = Some(e);
+            self.alert_dialog.emit(AlertMsg::Show);
+        };
+
         match msg {
             Self::Input::Show => self.visible = true,
             Self::Input::Hide => self.visible = false,
             Self::Input::AskForFieldsMap => {
                 self.fields.emit(FieldsInput::Collect);
             }
-            // FIXME: On the first run allows to save with all fields being empty.
             Self::Input::Generate(fields) => match GenerationSettings::try_from(fields) {
                 Ok(settings) => {
-                    self.latest_generated_configs = Some(settings.generate());
-                    self.save_dialog
-                        .emit(SaveDialogMsg::SaveAs("clients.tar".to_string()))
+                    let cfg = match settings.generate() {
+                        Ok(cfg) => cfg,
+                        Err(e) => {
+                            ui_error(format!("Error generating config: {e}"));
+                            return;
+                        }
+                    };
+
+                    let Some(iface_name) = cfg.interface.name.clone() else {
+                        ui_error("Interface name is missing in the generated config.".into());
+                        return;
+                    };
+
+                    let cfg_path = cli::get_configs_dir().join(format!("{iface_name}.conf"));
+                    if let Err(e) = write_configs_to_path(&[&cfg], &cfg_path) {
+                        ui_error(format!("Error writing config to file: {e}"));
+                    }
+
+                    sender
+                        .output(Self::Output::GeneratedHostConfig(cfg.clone()))
+                        .unwrap();
+                    sender.input(Self::Input::Hide);
+                    self.latest_generated_configs = Some(cfg);
                 }
                 Err(e) => {
-                    self.alert_dialog
-                        .state()
-                        .get_mut()
-                        .model
-                        .settings
-                        .secondary_text = Some(e.into());
-                    self.alert_dialog.emit(AlertMsg::Show);
+                    ui_error(e.into());
                 }
             },
-            Self::Input::SaveGeneratedInPath(path) => {
-                let cfgs = self.latest_generated_configs.take().unwrap();
-                let (host_cfg, clients_cfgs) = cfgs.split_first().unwrap();
-                write_configs_to_path(clients_cfgs.to_vec(), path).unwrap();
-                sender
-                    .output(Self::Output::GeneratedHostConfig(host_cfg.clone()))
-                    .unwrap();
-                sender.input(Self::Input::Hide);
-            }
             Self::Input::Ignore => (),
         }
     }

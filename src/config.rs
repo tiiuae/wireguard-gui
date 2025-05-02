@@ -2,13 +2,17 @@
     Copyright 2025 TII (SSRC) and the contributors
     SPDX-License-Identifier: Apache-2.0
 */
+use crate::cli::{get_config_file_owner, get_config_file_owner_group};
+use crate::utils;
+use log::debug;
+use log::{error, info};
+use nix::unistd::{chown, Gid, Group, Uid, User};
 use std::fs;
 use std::io;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 
-use crate::utils;
-use tar::{Builder, EntryType, Header, HeaderMode};
 /// Defines the VPN settings for the local node.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Default, Debug)]
 pub struct Interface {
@@ -59,13 +63,10 @@ pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
         .enumerate()
         .filter(|(_, l)| !l.is_empty())
         .map(|(i, l)| {
-            if l.starts_with('[') && l.ends_with(']') {
-                Ok(LineType::Section(l[1..l.len() - 1].trim().into()))
-            } else if let Some(pos) = l.chars().position(|c| c == '=') {
-                Ok(LineType::Attribute(
-                    l[0..pos].trim().into(),
-                    l[pos + 1..l.len()].trim().into(),
-                ))
+            if let Some(section) = l.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+                Ok(LineType::Section(section.trim().into()))
+            } else if let Some((left, right)) = l.split_once('=') {
+                Ok(LineType::Attribute(left.trim().into(), right.trim().into()))
             } else {
                 Err(format!("Couldn't parse line {}: `{}`", i + 1, l.trim()))
             }
@@ -93,19 +94,29 @@ pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
                     is_in_interface = false;
                     is_in_peer = true;
                 }
-                i => return Err(format!("Unexpected interface name {}.", i)),
+                i => return Err(format!("Unexpected interface name {i}.")),
             },
             LineType::Attribute(key, value) => {
                 if is_in_interface {
                     match key.as_str() {
                         "# Name" => cfg.interface.name = Some(value),
-                        "Address" => cfg.interface.address = Some(value),
+                        "Address" => {
+                            if !utils::is_ip_valid(Some(&value)) {
+                                return Err(format!("Invalid IP address {value}."));
+                            }
+
+                            cfg.interface.address = Some(value);
+                        }
                         "ListenPort" => cfg.interface.listen_port = Some(value),
                         "PrivateKey" => {
-                            //TODO: this should be removed in next release
                             cfg.interface.public_key =
-                                Some(utils::generate_public_key(value.clone()).unwrap());
-                            cfg.interface.private_key = Some(value)
+                                match utils::generate_public_key(value.clone()) {
+                                    Ok(key) => Some(key),
+                                    Err(e) => {
+                                        return Err(format!("Generating public key: {e}."));
+                                    }
+                                };
+                            cfg.interface.private_key = Some(value);
                         }
                         "DNS" => cfg.interface.dns = Some(value),
                         "Table" => cfg.interface.table = Some(value),
@@ -114,7 +125,7 @@ pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
                         "PostUp" => cfg.interface.post_up = Some(value),
                         "PreDown" => cfg.interface.pre_down = Some(value),
                         "PostDown" => cfg.interface.post_down = Some(value),
-                        k => return Err(format!("Unexpected Interface configuration key {}.", k)),
+                        k => return Err(format!("Unexpected Interface configuration key {k}.")),
                     }
                 } else if is_in_peer {
                     match key.as_str() {
@@ -123,7 +134,7 @@ pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
                         "Endpoint" => tmp_peer.endpoint = Some(value),
                         "PublicKey" => tmp_peer.public_key = Some(value),
                         "PersistentKeepalive" => tmp_peer.persistent_keepalive = Some(value),
-                        k => return Err(format!("Unexpected Peer configuration key {}.", k)),
+                        k => return Err(format!("Unexpected Peer configuration key {k}.")),
                     };
 
                     match it.peek() {
@@ -137,7 +148,7 @@ pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
                         _ => (),
                     }
                 } else {
-                    return Err(format!("Unexpected attribute {}.", key));
+                    return Err(format!("Unexpected attribute {key}."));
                 }
             }
         }
@@ -196,34 +207,59 @@ pub fn write_config(c: &WireguardConfig) -> String {
     res
 }
 
-pub fn write_configs_to_path(cfgs: Vec<WireguardConfig>, path: PathBuf) -> io::Result<()> {
-    let time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+fn get_uid_gid(user: &str, group: &str) -> io::Result<(Uid, Gid)> {
+    let uid = User::from_name(user)
+        .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to resolve user"))?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "User not found"))?
+        .uid
+        .as_raw();
 
-    let file = fs::File::create(path)?;
-    let mut ar = Builder::new(file);
-    ar.mode(HeaderMode::Complete);
-    let mut header = Header::new_gnu();
+    let gid = Group::from_name(group)
+        .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to resolve group"))?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Group not found"))?
+        .gid
+        .as_raw();
 
-    for (i, cfg) in cfgs.iter().enumerate() {
-        let mut name = cfg
-            .interface
-            .name
-            .clone()
-            .unwrap_or_else(|| format!("configuration-{i}"));
-        name.push_str(".conf");
-        let content = crate::config::write_config(cfg);
-
-        header.set_size(content.as_bytes().len().try_into().unwrap());
-        header.set_entry_type(EntryType::Regular);
-        header.set_mtime(time.as_secs());
-        header.set_mode(0o755);
-        header.set_cksum();
-        ar.append_data(&mut header, name, content.as_bytes())?;
-    }
-
-    ar.finish()
+    Ok((uid.into(), gid.into()))
 }
 
+pub fn write_configs_to_path(cfgs: &[&WireguardConfig], path: &Path) -> io::Result<()> {
+    let mut file = fs::File::create(path)?;
+    let mut perms = file.metadata()?.permissions();
+    perms.set_mode(0o600);
+    file.set_permissions(perms)?; // Iterate through each configuration and write it to a file
+
+    for cfg in cfgs.iter() {
+        // Generate the content for the configuration
+        let content = crate::config::write_config(cfg);
+
+        // Print content for debugging
+        debug!("Writing to file: {:?}", file);
+        debug!("Content:\n{}", content);
+
+        // Write the content to the file
+        file.write_all(content.as_bytes())?;
+    }
+
+    // Resolve UID and GID for the user and group
+    match get_uid_gid(get_config_file_owner(), get_config_file_owner_group()) {
+        Ok((uid, gid)) => {
+            info!("Resolved UID: {}, GID: {}", uid, gid);
+            // Now you can proceed with ownership changes or other tasks
+            // For example, use nix::unistd::chown(path, Some(uid), Some(gid)) to apply the ownership
+            chown(path, Some(uid), Some(gid)).map_err(|_| {
+                io::Error::new(io::ErrorKind::Other, "Failed to change file ownership")
+            })?;
+        }
+        Err(err) => {
+            error!("Error: {}", err);
+            fs::remove_file(path)?;
+            return Err(err);
+        }
+    }
+
+    Ok(())
+}
 pub fn get_value(f: &Option<String>) -> &str {
     match f {
         Some(v) => v,
