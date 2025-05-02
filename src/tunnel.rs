@@ -4,19 +4,21 @@
 */
 use std::{
     io::{self},
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::Command,
 };
 
 use gtk::prelude::*;
 use relm4::prelude::*;
 
-use crate::config::*;
 use crate::utils::*;
+use crate::{cli, config::*};
 use getifaddrs::{getifaddrs, InterfaceFlags};
 use log::*;
+use relm4_components::alert::*;
 use std::net::SocketAddr;
 use std::str::FromStr;
+
 #[derive(PartialEq)]
 pub enum NetState {
     IplinkUp = 0x01,
@@ -25,11 +27,13 @@ pub enum NetState {
     WgQuickDown = 0x08,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Default, Clone)]
+#[derive(Debug)]
 pub struct Tunnel {
     pub name: String,
     pub config: WireguardConfig,
     pub active: bool,
+    pub pending_remove: Option<DynamicIndex>,
+    alert_dialog: Option<Controller<Alert>>,
 }
 
 impl Tunnel {
@@ -40,11 +44,18 @@ impl Tunnel {
 
         Self {
             name,
-            active,
             config,
+            active,
+            pending_remove: None,
+            alert_dialog: None,
         }
     }
-
+    pub fn update_from(&mut self, other: Tunnel) {
+        self.active = other.active;
+        self.pending_remove = other.pending_remove;
+        self.config = other.config;
+        self.name = other.name;
+    }
     fn is_interface_up(interface_name: &str) -> Result<bool, std::io::Error> {
         let ifaddrs = getifaddrs().map_err(|_| {
             std::io::Error::new(std::io::ErrorKind::Other, "Failed to get interfaces")
@@ -61,7 +72,7 @@ impl Tunnel {
     }
 
     fn is_wg_iface_running(interface: &str) -> NetState {
-        let cmd_str = format!("wg show {}", interface);
+        let cmd_str = format!("wg show {interface}");
 
         // Run `wg show <interface>`
         let wg_output = Command::new("wg")
@@ -88,13 +99,13 @@ impl Tunnel {
     }
 
     pub fn path(&self) -> PathBuf {
-        Path::new(TUNNELS_PATH).join(format!("{}.conf", self.name))
+        cli::get_configs_dir().join(format!("{}.conf", self.name))
     }
 
-    /// Toggle the WireGuard interface using wireguard-tools.
+    /// Toggle the `WireGuard` interface using wireguard-tools.
     pub fn try_toggle(&mut self) -> Result<(), io::Error> {
         let is_endpoint_valid = |config: &WireguardConfig| -> Result<(), io::Error> {
-            for peer in config.peers.iter() {
+            for peer in &config.peers {
                 if let Some(endpoint) = peer.endpoint.as_ref() {
                     // Try to parse the endpoint into a SocketAddr
                     if SocketAddr::from_str(endpoint).is_err() {
@@ -121,7 +132,7 @@ impl Tunnel {
                 error!("Failed to execute wg-quick {} {}", action, &self.name);
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
-                    format!("Failed to execute wg-quick {}", action),
+                    format!("Failed to execute wg-quick {action}",),
                 ));
             }
             Ok(())
@@ -160,6 +171,9 @@ impl Tunnel {
 #[derive(Debug)]
 pub enum TunnelMsg {
     Toggle,
+    Remove(DynamicIndex),
+    RemoveConfirmed,
+    Ignore,
 }
 
 #[derive(Debug)]
@@ -178,6 +192,7 @@ impl FactoryComponent for Tunnel {
 
     view! {
         #[root]
+        #[name(root)]
         gtk::Box {
             set_orientation: gtk::Orientation::Horizontal,
             set_spacing: 5,
@@ -193,15 +208,34 @@ impl FactoryComponent for Tunnel {
             },
 
             gtk::Button::with_label("Remove") {
+               // connect_clicked => Self::Input::Remove,
+
                 connect_clicked[sender, index] => move |_| {
-                    sender.output(Self::Output::Remove(index.clone())).unwrap();
+                    sender.input(Self::Input::Remove(index.clone()));
                 }
             },
         }
     }
 
-    fn init_model(config: Self::Init, _index: &DynamicIndex, _sender: FactorySender<Self>) -> Self {
-        Self::new(config)
+    fn init_model(config: Self::Init, _index: &DynamicIndex, sender: FactorySender<Self>) -> Self {
+        let mut new_self_cfg = Self::new(config);
+        let alert_dialog = Alert::builder()
+            .launch(AlertSettings {
+                text: Some(String::from("Are you sure to remove this tunnel?")),
+                confirm_label: Some(String::from("Remove")),
+                cancel_label: Some(String::from("Cancel")),
+                is_modal: true,
+                destructive_accept: true,
+                ..Default::default()
+            })
+            .forward(sender.input_sender(), move |response| match response {
+                AlertResponse::Confirm => Self::Input::RemoveConfirmed,
+                _ => Self::Input::Ignore,
+            });
+
+        new_self_cfg.alert_dialog = Some(alert_dialog);
+
+        new_self_cfg
     }
 
     fn update_with_view(
@@ -220,6 +254,19 @@ impl FactoryComponent for Tunnel {
                 };
                 debug!("connection state: {}", self.active);
                 widgets.switch.set_state(self.active);
+            }
+            Self::Input::Remove(index) => {
+                self.pending_remove = Some(index.clone());
+                if let Some(alert_dialog) = self.alert_dialog.as_ref() {
+                    alert_dialog.emit(AlertMsg::Show);
+                }
+            }
+            Self::Input::RemoveConfirmed => {
+                let index = self.pending_remove.take().unwrap();
+                sender.output(Self::Output::Remove(index)).unwrap();
+            }
+            Self::Input::Ignore => {
+                // Ignore the message
             }
         }
     }

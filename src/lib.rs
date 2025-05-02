@@ -5,7 +5,7 @@ pub mod config;
 pub mod fields;
 /// Settings that will be used during generation of configurations.
 pub mod generation_settings;
-/// Generator component. Provides functionality similar to https://www.wireguardconfig.com/
+/// Generator component.
 pub mod generator;
 /// Overview of tunnel configuration.
 pub mod overview;

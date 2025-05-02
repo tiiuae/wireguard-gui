@@ -1,3 +1,4 @@
+use crate::cli;
 /*
     Copyright 2025 TII (SSRC) and the contributors
     SPDX-License-Identifier: Apache-2.0
@@ -5,26 +6,33 @@
 use crate::config::{parse_config, WireguardConfig};
 use log::*;
 use std::fs;
-use std::io::{self, Error, Read, Result, Write};
+use std::io::{self, Read, Result, Write};
 use std::process::*;
 use std::time::Duration;
 use wait_timeout::ChildExt;
-pub const TUNNELS_PATH: &str = "/etc/wireguard";
 
 pub fn load_existing_configurations() -> Result<Vec<WireguardConfig>> {
     let mut cfgs = vec![];
 
-    for entry in fs::read_dir(TUNNELS_PATH)? {
+    for entry in fs::read_dir(cli::get_configs_dir())? {
         let file = entry?;
-        if file.file_type()?.is_file() && file.path().extension().map_or(false, |e| e == "conf") {
+        if file.file_type()?.is_file() && file.path().extension().is_some_and(|e| e == "conf") {
             let file_path = file.path();
-            let file_content = fs::read_to_string(&file_path)?;
-            let mut cfg = parse_config(&file_content).map_err(Error::other)?;
+            let Ok(file_content) = fs::read_to_string(&file_path) else {
+                error!("Could not read file: {}", file_path.display());
+                continue;
+            };
+
+            let Ok(mut cfg) = parse_config(&file_content) else {
+                error!("Could not parse file: {}", file_path.display());
+                continue;
+            };
             if cfg.interface.name.is_none() {
                 if let Some(file_name) = file_path.file_stem().and_then(|n| n.to_str()) {
                     cfg.interface.name = Some(file_name.to_string());
                 }
             }
+
             cfgs.push(cfg);
         }
     }
@@ -117,4 +125,15 @@ pub fn wait_cmd_with_timeout(
 
     // Return both the status code and the output
     Ok((status_code, cmd_response))
+}
+
+pub fn is_ip_valid(ip: Option<&str>) -> bool {
+    if let Some(ip_str) = ip {
+        let trimmed = ip_str.trim();
+        if !trimmed.is_empty() {
+            return trimmed.parse::<ipnetwork::IpNetwork>().is_ok();
+        }
+    }
+
+    false
 }
