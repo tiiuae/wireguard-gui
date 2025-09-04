@@ -15,7 +15,7 @@ tokio = { version = "1.45.0", features = ["full"] }
 wait-timeout = "0.2.1"
 getifaddrs = "0.1.5"
 clap = { version = "4.5.26", features = ["derive"] }
-log = "0.4.25"
+log = "0.4.28"
 env_logger = "0.11.6"
 lazy_static = "1.5.0"
 syslog = "7.0.0"
