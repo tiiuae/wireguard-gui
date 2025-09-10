@@ -148,8 +148,10 @@
               '';
 
               installPhase = ''
+                runHook preInstall
                 mkdir -p $out/bin
                 install target/${buildType}/wireguard-gui $out/bin/wireguard-gui
+                runHook postInstall
               '';
               postFixup = ''
                 wrapProgram $out/bin/wireguard-gui \
