@@ -209,13 +209,13 @@ pub fn write_config(c: &WireguardConfig) -> String {
 
 fn get_uid_gid(user: &str, group: &str) -> io::Result<(Uid, Gid)> {
     let uid = User::from_name(user)
-        .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to resolve user"))?
+        .map_err(|_| io::Error::other("Failed to resolve user"))?
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "User not found"))?
         .uid
         .as_raw();
 
     let gid = Group::from_name(group)
-        .map_err(|_| io::Error::new(io::ErrorKind::Other, "Failed to resolve group"))?
+        .map_err(|_| io::Error::other("Failed to resolve group"))?
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Group not found"))?
         .gid
         .as_raw();
@@ -247,9 +247,8 @@ pub fn write_configs_to_path(cfgs: &[&WireguardConfig], path: &Path) -> io::Resu
             info!("Resolved UID: {}, GID: {}", uid, gid);
             // Now you can proceed with ownership changes or other tasks
             // For example, use nix::unistd::chown(path, Some(uid), Some(gid)) to apply the ownership
-            chown(path, Some(uid), Some(gid)).map_err(|_| {
-                io::Error::new(io::ErrorKind::Other, "Failed to change file ownership")
-            })?;
+            chown(path, Some(uid), Some(gid))
+                .map_err(|_| io::Error::other("Failed to change file ownership"))?;
         }
         Err(err) => {
             error!("Error: {}", err);
