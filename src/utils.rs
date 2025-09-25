@@ -74,12 +74,7 @@ pub fn generate_public_key(priv_key: String) -> Result<String> {
 
     String::from_utf8(output.stdout)
         .map(|s| s.trim().into())
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                "Could not convert output of `wg pubkey` to utf-8 string.",
-            )
-        })
+        .map_err(|_| io::Error::other("Could not convert output of `wg pubkey` to utf-8 string."))
 }
 
 /// Run a command with a timeout and return the exit status and stdout output.

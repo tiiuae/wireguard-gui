@@ -57,9 +57,8 @@ impl Tunnel {
         self.name = other.name;
     }
     fn is_interface_up(interface_name: &str) -> Result<bool, std::io::Error> {
-        let ifaddrs = getifaddrs().map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::Other, "Failed to get interfaces")
-        })?;
+        let ifaddrs =
+            getifaddrs().map_err(|_| std::io::Error::other("Failed to get interfaces"))?;
 
         for interface in ifaddrs {
             if interface.name == interface_name {
@@ -109,10 +108,7 @@ impl Tunnel {
                 if let Some(endpoint) = peer.endpoint.as_ref() {
                     // Try to parse the endpoint into a SocketAddr
                     if SocketAddr::from_str(endpoint).is_err() {
-                        return Err(io::Error::new(
-                            io::ErrorKind::Other,
-                            "Invalid endpoint format",
-                        ));
+                        return Err(io::Error::other("Invalid endpoint format"));
                     }
                 }
             }
@@ -130,10 +126,9 @@ impl Tunnel {
             if !wait_cmd_with_timeout(cmd, 3, Some(&cmd_str)).is_ok_and(|(code, _)| code == Some(0))
             {
                 error!("Failed to execute wg-quick {} {}", action, &self.name);
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("Failed to execute wg-quick {action}",),
-                ));
+                return Err(io::Error::other(format!(
+                    "Failed to execute wg-quick {action}",
+                )));
             }
             Ok(())
         };
@@ -156,12 +151,7 @@ impl Tunnel {
             NetState::WgQuickDown => {
                 run_wg_quick("up")?;
             }
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Unknown interface state",
-                ))
-            }
+            _ => return Err(io::Error::other("Unknown interface state")),
         }
 
         Ok(())
