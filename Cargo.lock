@@ -415,9 +415,9 @@ dependencies = [
 
 [[package]]
 name = "getifaddrs"
-version = "0.1.5"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ba121d81ab5ea05b0cd5858516266800bf965531a794f7ac58e3eeb804f364f"
+checksum = "06f770241660efeeedb30b48ccbe0a8e6f649322148237539e71f3ccd14a4461"
 dependencies = [
  "bitflags",
  "libc",
