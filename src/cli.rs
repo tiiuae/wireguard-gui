@@ -36,9 +36,9 @@ struct Args {
     #[arg(long, value_enum, default_value_t)]
     pub log_output: LogOutput,
 
-    /// Path to the Wireguard config files
+    /// Path to the Wireguard files
     #[arg(long, default_value = "/etc/wireguard")]
-    config_dir: PathBuf,
+    app_dir: PathBuf,
 
     /// Owner of the config files
     #[arg(long, default_value = "root")]
@@ -57,8 +57,12 @@ pub fn get_log_output() -> LogOutput {
     CLI_ARGS.log_output
 }
 
-pub fn get_configs_dir() -> &'static PathBuf {
-    &CLI_ARGS.config_dir
+pub fn get_configs_dir() -> PathBuf {
+    CLI_ARGS.app_dir.join("config")
+}
+
+pub fn get_scripts_dir() -> PathBuf {
+    CLI_ARGS.app_dir.join("scripts")
 }
 
 pub fn get_config_file_owner() -> &'static str {

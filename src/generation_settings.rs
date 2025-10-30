@@ -17,12 +17,6 @@ pub struct GenerationSettings {
     tunnel_iface_ip: IpNetwork,
     listen_port: u16,
     number_of_peers: usize,
-    // client_allowed_ips: Vec<IpCidr>,
-    // Endpoint is represented by domain name and port, but keep just as String for simplicity.
-    // endpoint: Option<String>,
-    // dns: Option<String>,
-    post_up_rule: Option<String>,
-    post_down_rule: Option<String>,
 }
 
 impl TryFrom<HashMap<String, Option<String>>> for GenerationSettings {
@@ -60,39 +54,11 @@ impl TryFrom<HashMap<String, Option<String>>> for GenerationSettings {
                 s.parse::<usize>()
                     .map_err(|_| "Could not parse Number of Peers")
             })?;
-
-        // let client_allowed_ips: Vec<IpCidr> = map
-        //     .get("Client Allowed IPs")
-        //     .cloned()
-        //     .flatten()
-        //     .ok_or("No Client Allowed IPs specified")
-        //     .and_then(|s| {
-        //         s.split(',')
-        //             .map(|addr| addr.trim().parse::<IpCidr>())
-        //             .collect::<Result<Vec<_>, _>>()
-        //             .map_err(|_| "Could not parse one of the Allowed IP addresses")
-        //     })?;
-        // let endpoint: Option<String> = map.get("Endpoint (Optional)").cloned().flatten();
-        // let dns: Option<String> = map.get("DNS (Optional)").cloned().flatten();
-        let post_up_rule = map
-            .remove("Post-Up rule (Optional)")
-            .flatten()
-            .or(Some(generate_iptables_rule("-A", &tunnel_iface_name)));
-        let post_down_rule = map
-            .remove("Post-Down rule (Optional)")
-            .flatten()
-            .or(Some(generate_iptables_rule("-D", &tunnel_iface_name)));
-
         Ok(Self {
             tunnel_iface_name,
             tunnel_iface_ip,
             listen_port,
             number_of_peers,
-            // client_allowed_ips,
-            // endpoint,
-            // dns,
-            post_up_rule,
-            post_down_rule,
         })
     }
 }
@@ -111,8 +77,6 @@ impl GenerationSettings {
                 listen_port: Some(listen_port.clone()),
                 public_key: Some(host_public_key),
                 private_key: Some(host_private_key),
-                post_up: self.post_up_rule.clone(),
-                post_down: self.post_down_rule.clone(),
                 ..Default::default()
             },
             peers: vec![],
