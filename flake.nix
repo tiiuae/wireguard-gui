@@ -45,7 +45,7 @@
         commonArgs = {
           inherit src;
           strictDeps = true;
-          nativeBuildInputs = with pkgs; [pkg-config wrapGAppsHook];
+          nativeBuildInputs = with pkgs; [pkg-config wrapGAppsHook4];
 
           buildInputs = with pkgs; [
             wireguard-tools
