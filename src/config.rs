@@ -2,16 +2,14 @@
     Copyright 2025 TII (SSRC) and the contributors
     SPDX-License-Identifier: Apache-2.0
 */
-use crate::cli::{get_config_file_owner, get_config_file_owner_group};
-use crate::utils;
-use log::debug;
-use log::{error, info};
+use crate::{cli, utils};
+use log::{debug, error, info, warn};
 use nix::unistd::{chown, Gid, Group, Uid, User};
 use std::fs;
 use std::io;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Defines the VPN settings for the local node.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Default, Debug)]
@@ -51,13 +49,19 @@ pub struct WireguardConfig {
     pub peers: Vec<Peer>,
 }
 
+pub struct RoutingScripts {
+    pub path: PathBuf,
+    pub desc: String,
+    pub name: String,
+}
+
 pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
     enum LineType {
         Section(String),
         Attribute(String, String),
     }
 
-    let lexed_lines = s // remove_comments(s)
+    let lexed_lines = s
         .split('\n')
         .map(str::trim)
         .enumerate()
@@ -224,6 +228,13 @@ fn get_uid_gid(user: &str, group: &str) -> io::Result<(Uid, Gid)> {
 }
 
 pub fn write_configs_to_path(cfgs: &[&WireguardConfig], path: &Path) -> io::Result<()> {
+    // Make sure the parent directory exists
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            println!("Parent directory not found. Creating: {}", parent.display());
+            fs::create_dir_all(parent)?;
+        }
+    }
     let mut file = fs::File::create(path)?;
     let mut perms = file.metadata()?.permissions();
     perms.set_mode(0o600);
@@ -242,7 +253,10 @@ pub fn write_configs_to_path(cfgs: &[&WireguardConfig], path: &Path) -> io::Resu
     }
 
     // Resolve UID and GID for the user and group
-    match get_uid_gid(get_config_file_owner(), get_config_file_owner_group()) {
+    match get_uid_gid(
+        cli::get_config_file_owner(),
+        cli::get_config_file_owner_group(),
+    ) {
         Ok((uid, gid)) => {
             info!("Resolved UID: {}, GID: {}", uid, gid);
             // Now you can proceed with ownership changes or other tasks
@@ -262,8 +276,79 @@ pub fn write_configs_to_path(cfgs: &[&WireguardConfig], path: &Path) -> io::Resu
 pub fn get_value(f: &Option<String>) -> &str {
     match f {
         Some(v) => v,
-        None => "unknown",
+        _ => "unknown",
     }
+}
+
+fn get_script_paths() -> Vec<PathBuf> {
+    // Make sure the scripts directory exists
+    let scripts_dir = cli::get_scripts_dir();
+    if !scripts_dir.exists() {
+        debug!(
+            "Scripts directory not found. Creating: {}",
+            scripts_dir.display()
+        );
+        if let Err(err) = fs::create_dir_all(&scripts_dir) {
+            error!("Failed to create scripts directory: {}", err);
+            return Vec::new();
+        } else {
+            debug!("Created scripts directory successfully.");
+        }
+    }
+
+    // Read and collect all files in the directory
+    match fs::read_dir(&scripts_dir) {
+        Ok(entries) => entries
+            .filter_map(Result::ok) // keep only successful entries
+            .map(|e| e.path()) // convert to PathBuf
+            .filter(|p| p.is_file()) // only files
+            .collect(),
+        Err(err) => {
+            warn!("Failed to read scripts directory: {}", err);
+            Vec::new()
+        }
+    }
+}
+
+pub fn extract_scripts_metadata() -> Vec<RoutingScripts> {
+    const MAX_DESC_LEN: usize = 300; // maximum characters for description
+
+    let mut scripts = Vec::new();
+
+    for path in get_script_paths() {
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let content = fs::read_to_string(&path).unwrap_or_default();
+
+        // Extract lines between first pair of "###" that start with "#"
+        let mut desc = {
+            let mut between_markers = false;
+            let mut lines = Vec::new();
+            for line in content.lines() {
+                let line = line.trim();
+                if line == "###" {
+                    between_markers = !between_markers;
+                    continue;
+                }
+                if between_markers && line.starts_with('#') {
+                    lines.push(line.trim_start_matches('#').trim());
+                }
+            }
+            lines.join("\n")
+        };
+        // Truncate description if it exceeds MAX_DESC_LEN
+        if desc.len() > MAX_DESC_LEN {
+            desc.truncate(MAX_DESC_LEN);
+            desc.push_str("…"); // add ellipsis
+        }
+        scripts.push(RoutingScripts { path, name, desc });
+    }
+
+    scripts
 }
 
 #[cfg(test)]

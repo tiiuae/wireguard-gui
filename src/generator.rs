@@ -81,14 +81,6 @@ impl SimpleComponent for GeneratorModel {
             ("Tunnel interface ip".into(), None),
             ("Listen Port [default:51820]".into(), Some("51820".into())),
             ("Number of Peers [default:1]".into(), Some("1".into())),
-            /*   ("Client Allowed IPs".into(), Some("0.0.0.0/0, ::/0".into())),
-            (
-                "Endpoint (Optional)".into(),
-                Some("<peer public ip>:51820".into()),
-            ), */
-            // ("DNS (Optional)".into(), Some("DNS (Optional)".into())),
-            ("Post-Up rule (Optional)".into(), None),
-            ("Post-Down rule (Optional)".into(), None),
         ];
         let fields_settings = FieldsSettings { fields_description };
         let fields = Fields::builder().launch(fields_settings).forward(

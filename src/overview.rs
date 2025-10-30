@@ -3,19 +3,21 @@
     SPDX-License-Identifier: Apache-2.0
 */
 
+use std::fs;
 use std::path::PathBuf;
-
 // use gtk::prelude::*;
 use relm4::factory::{DynamicIndex, FactoryVecDeque};
+use relm4::gtk::subclass::widget;
 use relm4::{gtk::prelude::*, prelude::*};
 
 use crate::config::*;
 use crate::peer::*;
-use crate::utils;
-use log::debug;
+use crate::{cli, utils};
+use log::{debug, error};
 pub struct OverviewModel {
     interface: Interface,
     peers: FactoryVecDeque<PeerComp>,
+    routing_scripts: Vec<RoutingScripts>,
 }
 
 impl OverviewModel {
@@ -38,10 +40,7 @@ pub enum InterfaceSetKind {
     Dns,
     Table,
     Mtu,
-    PreUp,
-    PostUp,
-    PreDown,
-    PostDown,
+    RoutingScripts,
 }
 
 #[derive(Debug)]
@@ -207,65 +206,20 @@ impl SimpleComponent for OverviewModel {
                     },
 
                     attach[0, 8, 1, 1] = &gtk::Label {
-                        set_label: "PreUp:",
+                        set_label: "Routing Scripts:",
                         set_halign: gtk::Align::Start,
                     },
-                    #[name = "pre_up"]
-                    attach[1, 8, 1, 1] = &gtk::EditableLabel {
-                        #[watch]
-                        set_text: get_value(&model.interface.pre_up),
-                        connect_editing_notify[sender] => move |l| {
-                            if !l.is_editing() {
-                                let new: String = l.text().trim().into();
-                                sender.input(Self::Input::SetInterface(InterfaceSetKind::PreUp, (new != "unknown").then_some(new)));
-                            }
-                        },
-                    },
-
-                    attach[0, 9, 1, 1] = &gtk::Label {
-                        set_label: "PostUp:",
-                        set_halign: gtk::Align::Start,
-                    },
-                    #[name = "post_up"]
-                    attach[1, 9, 1, 1] = &gtk::EditableLabel {
-                        #[watch]
-                        set_text: get_value(&model.interface.post_up),
-                        connect_editing_notify[sender] => move |l| {
-                            if !l.is_editing() {
-                                let new: String = l.text().trim().into();
-                                sender.input(Self::Input::SetInterface(InterfaceSetKind::PostUp, (new != "unknown").then_some(new)));
-                            }
-                        },
-                    },
-
-                    attach[0, 10, 1, 1] = &gtk::Label {
-                        set_label: "PreDown:",
-                        set_halign: gtk::Align::Start,
-                    },
-                    #[name = "pre_down"]
-                    attach[1, 10, 1, 1] = &gtk::EditableLabel {
-                        #[watch]
-                        set_text: get_value(&model.interface.pre_down),
-                        connect_editing_notify[sender] => move |l| {
-                            if !l.is_editing() {
-                                let new: String = l.text().trim().into();
-                                sender.input(Self::Input::SetInterface(InterfaceSetKind::PreDown, (new != "unknown").then_some(new)));
-                            }
-                        },
-                    },
-
-                    attach[0, 11, 1, 1] = &gtk::Label {
-                        set_label: "PostDown:",
-                        set_halign: gtk::Align::Start,
-                    },
-                    #[name = "post_down"]
-                    attach[1, 11, 1, 1] = &gtk::EditableLabel {
-                        #[watch]
-                        set_text: get_value(&model.interface.post_down),
-                        connect_editing_notify[sender] => move |l| {
-                            if !l.is_editing() {
-                                let new: String = l.text().trim().into();
-                                sender.input(Self::Input::SetInterface(InterfaceSetKind::PostDown, (new != "unknown").then_some(new)));
+                    #[name = "routing_scripts"]
+                    attach[1, 8, 1, 1] = &gtk::DropDown {
+                        connect_selected_notify[sender] => move |dropdown| {
+                            if let Some(list) = dropdown.model().and_then(|m| m.downcast::<gtk::StringList>().ok()) {
+                                if let Some(item) = list.string(dropdown.selected()) {
+                                    dropdown.set_tooltip_text(Some(&format!("Selected: {}", item)));
+                                    sender.input(Self::Input::SetInterface(
+                                        InterfaceSetKind::RoutingScripts,
+                                        Some(item.to_string())
+                                    ));
+                                }
                             }
                         },
                     },
@@ -290,12 +244,20 @@ impl SimpleComponent for OverviewModel {
         let mut model = Self {
             interface: config.interface,
             peers,
+            routing_scripts: extract_scripts_metadata(),
         };
 
         model.replace_peers(config.peers);
-
         let widgets = view_output!();
 
+        // Convert script names into &str and prepend "None"
+        let script_name_list: Vec<&str> = std::iter::once("None")
+            .chain(model.routing_scripts.iter().map(|p| p.name.as_str()))
+            .collect();
+
+        widgets
+            .routing_scripts
+            .set_model(Some(&gtk::StringList::new(&script_name_list)));
         ComponentParts { model, widgets }
     }
 
@@ -357,10 +319,9 @@ impl SimpleComponent for OverviewModel {
                 InterfaceSetKind::Dns => self.interface.dns = value,
                 InterfaceSetKind::Table => self.interface.table = value,
                 InterfaceSetKind::Mtu => self.interface.mtu = value,
-                InterfaceSetKind::PreUp => self.interface.pre_up = value,
-                InterfaceSetKind::PostUp => self.interface.post_up = value,
-                InterfaceSetKind::PreDown => self.interface.pre_down = value,
-                InterfaceSetKind::PostDown => self.interface.post_down = value,
+                InterfaceSetKind::RoutingScripts => {
+                    println!("routing scripts");
+                }
             },
         }
     }
