@@ -103,18 +103,6 @@ impl Tunnel {
 
     /// Toggle the `WireGuard` interface using wireguard-tools.
     pub fn try_toggle(&mut self) -> Result<(), io::Error> {
-        let is_endpoint_valid = |config: &WireguardConfig| -> Result<(), io::Error> {
-            for peer in &config.peers {
-                if let Some(endpoint) = peer.endpoint.as_ref() {
-                    // Try to parse the endpoint into a SocketAddr
-                    if SocketAddr::from_str(endpoint).is_err() {
-                        return Err(io::Error::other("Invalid endpoint format"));
-                    }
-                }
-            }
-            Ok(())
-        };
-
         // Helper closure to run a command and check its success
         let run_wg_quick = |action: &str| -> Result<(), io::Error> {
             let cmd_str = format!("wg-quick {} {}", action, self.name);
@@ -134,11 +122,6 @@ impl Tunnel {
         };
 
         let state = Self::is_wg_iface_running(self.name.as_str());
-
-        // Check if the endpoint is valid before wireguard inteface is up
-        if state != NetState::WgQuickUp {
-            is_endpoint_valid(&self.config)?;
-        }
 
         match state {
             NetState::IplinkDown => {

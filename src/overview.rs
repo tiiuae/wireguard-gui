@@ -18,6 +18,7 @@ pub struct OverviewModel {
     interface: Interface,
     peers: FactoryVecDeque<PeerComp>,
     routing_scripts: Vec<RoutingScripts>,
+    binding_ifaces: Vec<String>,
 }
 
 impl OverviewModel {
@@ -41,6 +42,7 @@ pub enum InterfaceSetKind {
     Table,
     Mtu,
     RoutingScripts,
+    BindingIfaces,
 }
 
 #[derive(Debug)]
@@ -206,11 +208,31 @@ impl SimpleComponent for OverviewModel {
                     },
 
                     attach[0, 8, 1, 1] = &gtk::Label {
+                        set_label: "Binding Network Inteface:",
+                        set_halign: gtk::Align::Start,
+                    },
+                    #[name = "binding_ifaces"]
+                    attach[1, 8, 1, 1] = &gtk::DropDown {
+                        connect_selected_notify[sender] => move |dropdown| {
+                            if let Some(list) = dropdown.model().and_then(|m| m.downcast::<gtk::StringList>().ok()) {
+                                if let Some(item) = list.string(dropdown.selected()) {
+                                    let name = item.to_string();
+                                    sender.input(Self::Input::SetInterface(
+                                        InterfaceSetKind::BindingIfaces,
+                                        Some(name)
+                                    ));
+                                }
+                            }
+                        },
+                    },
+
+
+                    attach[0, 9, 1, 1] = &gtk::Label {
                         set_label: "Routing Scripts:",
                         set_halign: gtk::Align::Start,
                     },
                     #[name = "routing_scripts"]
-                    attach[1, 8, 1, 1] = &gtk::DropDown {
+                    attach[1, 9, 1, 1] = &gtk::DropDown {
                         connect_selected_notify[sender,scripts_clone] => move |dropdown| {
                             if let Some(list) = dropdown.model().and_then(|m| m.downcast::<gtk::StringList>().ok()) {
                                 if let Some(item) = list.string(dropdown.selected()) {
@@ -254,6 +276,7 @@ impl SimpleComponent for OverviewModel {
             interface: config.interface,
             peers,
             routing_scripts: extract_scripts_metadata(),
+            binding_ifaces: get_binding_interfaces(),
         };
         // ⭐ Clone the scripts for use in the DropDown closure
         let scripts_clone = model.routing_scripts.clone();
@@ -270,6 +293,14 @@ impl SimpleComponent for OverviewModel {
         widgets
             .routing_scripts
             .set_model(Some(&gtk::StringList::new(&script_name_list)));
+
+        widgets.binding_ifaces.set_model(Some(&gtk::StringList::new(
+            &model
+                .binding_ifaces
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>(),
+        )));
 
         ComponentParts { model, widgets }
     }
@@ -334,6 +365,9 @@ impl SimpleComponent for OverviewModel {
                 InterfaceSetKind::Mtu => self.interface.mtu = value,
                 InterfaceSetKind::RoutingScripts => {
                     println!("routing scripts");
+                }
+                InterfaceSetKind::BindingIfaces => {
+                    println!("Binding ifaces:{:?}", value);
                 }
             },
         }

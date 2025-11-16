@@ -5,6 +5,7 @@
 use crate::{cli, utils};
 use log::{debug, error, info, warn};
 use nix::unistd::{chown, Gid, Group, Uid, User};
+use pnet_datalink::interfaces;
 use std::fs;
 use std::io;
 use std::io::Write;
@@ -337,6 +338,27 @@ pub fn extract_scripts_metadata() -> Vec<RoutingScripts> {
     }
 
     scripts
+}
+
+pub fn get_binding_interfaces() -> Vec<String> {
+    const TYPE_ETHERNET: u32 = 1;
+    const TYPE_IEEE_802_11: u32 = 801;
+    interfaces()
+        .into_iter()
+        .filter(|iface| {
+            if iface.is_loopback() {
+                return false;
+            }
+            let type_path = format!("/sys/class/net/{}/type", iface.name);
+            if let Ok(content) = fs::read_to_string(type_path) {
+                let if_type: u32 = content.trim().parse().unwrap_or(0);
+                if_type == TYPE_ETHERNET || if_type == TYPE_IEEE_802_11 // Ethernet or Wi-Fi
+            } else {
+                false
+            }
+        })
+        .map(|iface| iface.name)
+        .collect()
 }
 
 #[cfg(test)]
