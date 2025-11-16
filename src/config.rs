@@ -48,11 +48,11 @@ pub struct WireguardConfig {
     pub interface: Interface,
     pub peers: Vec<Peer>,
 }
-
+#[derive(Clone)]
 pub struct RoutingScripts {
     pub path: PathBuf,
-    pub desc: String,
     pub name: String,
+    pub content_preview: String, // new field for truncated content
 }
 
 pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
@@ -311,8 +311,7 @@ fn get_script_paths() -> Vec<PathBuf> {
 }
 
 pub fn extract_scripts_metadata() -> Vec<RoutingScripts> {
-    const MAX_DESC_LEN: usize = 300; // maximum characters for description
-
+    const MAX_CONTENT_LEN: usize = 300;
     let mut scripts = Vec::new();
 
     for path in get_script_paths() {
@@ -324,28 +323,17 @@ pub fn extract_scripts_metadata() -> Vec<RoutingScripts> {
 
         let content = fs::read_to_string(&path).unwrap_or_default();
 
-        // Extract lines between first pair of "###" that start with "#"
-        let mut desc = {
-            let mut between_markers = false;
-            let mut lines = Vec::new();
-            for line in content.lines() {
-                let line = line.trim();
-                if line == "###" {
-                    between_markers = !between_markers;
-                    continue;
-                }
-                if between_markers && line.starts_with('#') {
-                    lines.push(line.trim_start_matches('#').trim());
-                }
-            }
-            lines.join("\n")
-        };
-        // Truncate description if it exceeds MAX_DESC_LEN
-        if desc.len() > MAX_DESC_LEN {
-            desc.truncate(MAX_DESC_LEN);
-            desc.push_str("…"); // add ellipsis
+        // Truncate content for preview
+        let mut content_preview = content.clone();
+        if content_preview.len() > MAX_CONTENT_LEN {
+            content_preview.truncate(MAX_CONTENT_LEN);
+            content_preview.push_str("…");
         }
-        scripts.push(RoutingScripts { path, name, desc });
+        scripts.push(RoutingScripts {
+            path,
+            name,
+            content_preview,
+        });
     }
 
     scripts
