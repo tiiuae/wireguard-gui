@@ -211,14 +211,23 @@ impl SimpleComponent for OverviewModel {
                     },
                     #[name = "routing_scripts"]
                     attach[1, 8, 1, 1] = &gtk::DropDown {
-                        connect_selected_notify[sender] => move |dropdown| {
+                        connect_selected_notify[sender,scripts_clone] => move |dropdown| {
                             if let Some(list) = dropdown.model().and_then(|m| m.downcast::<gtk::StringList>().ok()) {
                                 if let Some(item) = list.string(dropdown.selected()) {
-                                    dropdown.set_tooltip_text(Some(&format!("Selected: {}", item)));
+                                    let name = item.to_string();
                                     sender.input(Self::Input::SetInterface(
                                         InterfaceSetKind::RoutingScripts,
-                                        Some(item.to_string())
+                                        Some(name.clone())
                                     ));
+                                    let tooltip_text = if  item.to_string() == "None" {
+                                        "No script selected".to_string()
+                                    } else if let Some(script) = scripts_clone.iter().find(|s| s.name == name) {
+                                        script.content_preview.clone()
+                                    } else {
+                                        "Script not found".to_string()
+                                    };
+
+                                    dropdown.set_tooltip_text(Some(&tooltip_text));
                                 }
                             }
                         },
@@ -246,18 +255,22 @@ impl SimpleComponent for OverviewModel {
             peers,
             routing_scripts: extract_scripts_metadata(),
         };
+        // ⭐ Clone the scripts for use in the DropDown closure
+        let scripts_clone = model.routing_scripts.clone();
 
         model.replace_peers(config.peers);
+
         let widgets = view_output!();
 
         // Convert script names into &str and prepend "None"
         let script_name_list: Vec<&str> = std::iter::once("None")
-            .chain(model.routing_scripts.iter().map(|p| p.name.as_str()))
+            .chain(scripts_clone.iter().map(|p| p.name.as_str()))
             .collect();
 
         widgets
             .routing_scripts
             .set_model(Some(&gtk::StringList::new(&script_name_list)));
+
         ComponentParts { model, widgets }
     }
 
