@@ -27,6 +27,7 @@ pub struct Interface {
     pub post_up: Option<String>,
     pub pre_down: Option<String>,
     pub post_down: Option<String>,
+    pub binding_iface: Option<String>,
 }
 
 /// Defines the VPN settings for a remote peer capable of routing
@@ -49,11 +50,15 @@ pub struct WireguardConfig {
     pub interface: Interface,
     pub peers: Vec<Peer>,
 }
-#[derive(Clone)]
+#[derive(Clone,Default,Debug)]
 pub struct RoutingScripts {
     pub path: PathBuf,
     pub name: String,
-    pub content_preview: String, // new field for truncated content
+    pub content: String, // new field for truncated content
+    pub pre_up: Option<String>,
+    pub post_up: Option<String>,
+    pub pre_down: Option<String>,
+    pub post_down: Option<String>,
 }
 
 pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
@@ -311,8 +316,9 @@ fn get_script_paths() -> Vec<PathBuf> {
     }
 }
 
+/// Read scripts and extract routing keywords
 pub fn extract_scripts_metadata() -> Vec<RoutingScripts> {
-    const MAX_CONTENT_LEN: usize = 300;
+    const MAX_CONTENT_CHARS: usize = 4096;
     let mut scripts = Vec::new();
 
     for path in get_script_paths() {
@@ -322,22 +328,149 @@ pub fn extract_scripts_metadata() -> Vec<RoutingScripts> {
             .unwrap_or("unknown")
             .to_string();
 
-        let content = fs::read_to_string(&path).unwrap_or_default();
-
-        // Truncate content for preview
-        let mut content_preview = content.clone();
-        if content_preview.len() > MAX_CONTENT_LEN {
-            content_preview.truncate(MAX_CONTENT_LEN);
-            content_preview.push_str("…");
+        // Skip scripts that are too large
+        match fs::metadata(&path) {
+            Ok(metadata) => {
+                if metadata.len() as usize > MAX_CONTENT_CHARS {
+                    error!(
+                        "Script {} is too large (>{} chars), skipping",
+                        name, MAX_CONTENT_CHARS
+                    );
+                    continue;
+                }
+            }
+            Err(e) => {
+                error!("Failed to get metadata for {}: {}", name, e);
+                continue;
+            }
         }
-        scripts.push(RoutingScripts {
-            path,
-            name,
-            content_preview,
-        });
+
+        // Read the script content
+        match fs::read_to_string(&path) {
+            Ok(content) => {
+                // Extract PreUp/PostUp/PreDown/PostDown
+                match parse_routing_keywords(&content, &name) {
+                    Ok((pre_up, post_up, pre_down, post_down)) => {
+                        scripts.push(RoutingScripts {
+                            path,
+                            name,
+                            content,
+                            pre_up,
+                            post_up,
+                            pre_down,
+                            post_down,
+                        });
+                    }
+                    Err(e) => {
+                        error!("{}", e);
+                        continue;
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to read script {}: {}", name, e);
+            }
+        }
     }
 
     scripts
+}
+
+/// Validate the script content.
+/// Returns `Ok(())` if valid, otherwise `Err(String)` describing the issue.
+/// Validate that the script contains at least one of the required keywords.
+/// Parse the script content and extract routing keywords
+fn parse_routing_keywords(
+    content: &str,
+    script_name: &str,
+) -> Result<
+    (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ),
+    String,
+> {
+    let mut pre_up: Option<String> = None;
+    let mut post_up: Option<String> = None;
+    let mut pre_down: Option<String> = None;
+    let mut post_down: Option<String> = None;
+
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let keyword = if line.starts_with("PreUp") {
+            "PreUp"
+        } else if line.starts_with("PostUp") {
+            "PostUp"
+        } else if line.starts_with("PreDown") {
+            "PreDown"
+        } else if line.starts_with("PostDown") {
+            "PostDown"
+        } else {
+            continue;
+        };
+
+        let Some((_, cmds_raw)) = line.split_once('=') else {
+            return Err(format!(
+                "Invalid syntax in script '{}': missing '=' in line '{}'",
+                script_name, line
+            ));
+        };
+
+        let cmds_raw = cmds_raw.trim();
+
+        // Split commands
+        let parts: Vec<&str> = cmds_raw
+            .split(';')
+            .map(|c| c.trim())
+            .filter(|c| !c.is_empty())
+            .collect();
+
+        if parts.is_empty() {
+            return Err(format!(
+                "Invalid empty command list for {} in script '{}'",
+                keyword, script_name
+            ));
+        }
+
+        // Validate each command
+        for cmd in &parts {
+            if !(cmd.starts_with("iptables")
+                || cmd.starts_with("ip ")
+                || cmd.starts_with("ip6tables"))
+            {
+                return Err(format!(
+                    "Invalid command '{}' for {} in script '{}'. Only iptables/ip/ip6tables allowed.",
+                    cmd, keyword, script_name
+                ));
+            }
+        }
+
+        // Join back
+        let joined = parts.join("; ");
+
+        match keyword {
+            "PreUp" => pre_up = Some(joined),
+            "PostUp" => post_up = Some(joined),
+            "PreDown" => pre_down = Some(joined),
+            "PostDown" => post_down = Some(joined),
+            _ => {}
+        }
+    }
+
+    if pre_up.is_none() && post_up.is_none() && pre_down.is_none() && post_down.is_none() {
+        return Err(format!(
+            "Script '{}' does not contain any routing keywords (PreUp, PostUp, PreDown, PostDown)",
+            script_name
+        ));
+    }
+
+    Ok((pre_up, post_up, pre_down, post_down))
 }
 
 pub fn get_binding_interfaces() -> Vec<String> {
@@ -365,7 +498,133 @@ pub fn get_binding_interfaces() -> Vec<String> {
 mod tests {
     use super::*;
 
-    //     #[test]
+    use super::parse_routing_keywords;
+
+    #[test]
+    fn parse_single_keyword() {
+        let content = r#"
+            # Comment line
+            PreUp = iptables -A INPUT -i %i -j ACCEPT
+        "#;
+
+        let (pre_up, post_up, pre_down, post_down) =
+            parse_routing_keywords(content, "test").expect("Should parse");
+
+        assert_eq!(pre_up.unwrap(), "iptables -A INPUT -i %i -j ACCEPT");
+        assert!(post_up.is_none());
+        assert!(pre_down.is_none());
+        assert!(post_down.is_none());
+    }
+
+    #[test]
+    fn parse_multiple_keywords() {
+        let content = r#"
+            # My scripts
+            # Vpn config
+            PreUp = iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+            PostUp = ip rule add ipproto tcp dport 22 table 1234
+            PreDown = iptables -D INPUT -p tcp --dport 22 -j ACCEPT
+            PostDown = ip rule delete ipproto tcp dport 22 table 1234
+        "#;
+
+        let (pre_up, post_up, pre_down, post_down) =
+            parse_routing_keywords(content, "test").expect("Should parse");
+
+        assert_eq!(
+            pre_up.unwrap(),
+            "iptables -A INPUT -p tcp --dport 22 -j ACCEPT"
+        );
+        assert_eq!(
+            post_up.unwrap(),
+            "ip rule add ipproto tcp dport 22 table 1234"
+        );
+        assert_eq!(
+            pre_down.unwrap(),
+            "iptables -D INPUT -p tcp --dport 22 -j ACCEPT"
+        );
+        assert_eq!(
+            post_down.unwrap(),
+            "ip rule delete ipproto tcp dport 22 table 1234"
+        );
+    }
+
+    #[test]
+    fn parse_ignores_comments_and_empty_lines() {
+        let content = r#"
+            #PreUp = wrong
+            # Comment
+             
+            PostDown = iptables -A ....
+            # end
+        "#;
+
+        let (pre_up, post_up, pre_down, post_down) =
+            parse_routing_keywords(content, "test").expect("Should parse");
+
+        assert!(pre_up.is_none());
+        assert!(post_up.is_none());
+        assert!(pre_down.is_none());
+        assert_eq!(post_down.unwrap(), "iptables -A ....");
+    }
+
+    #[test]
+    fn parse_no_keywords_fails() {
+        let content = r#"
+            # only comments
+            echo hello
+            something else
+        "#;
+
+        let err = parse_routing_keywords(content, "myscript").unwrap_err();
+
+        assert!(err.contains("myscript"), "Error should include script name");
+        assert!(
+            err.contains("does not contain any routing keywords"),
+            "Error message should indicate missing routing keywords"
+        );
+    }
+    #[test]
+    fn multiple_keywords_each_with_multicommands() {
+        let content = r#"
+            PreUp = iptables -A INPUT -i %i -j ACCEPT; iptables -A OUTPUT -o %i -j ACCEPT
+            PostUp = iptables -t nat -A PREROUTING -i %i -j DNAT --to 10.0.0.1; iptables -A FORWARD -i %i -j ACCEPT
+            PreDown = iptables -D INPUT -i %i -j ACCEPT; iptables -D OUTPUT -o %i -j ACCEPT
+            PostDown = echo done; echo really_done
+        "#;
+
+        let result = parse_routing_keywords(content, "multi");
+
+        // Must fail because PostDown contains invalid commands
+        assert!(
+            result.is_err(),
+            "Parser should fail due to invalid commands"
+        );
+
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("PostDown"),
+            "Error must mention the invalid keyword"
+        );
+        assert!(
+            err.contains("echo"),
+            "Error must mention the invalid command"
+        );
+    }
+
+    #[test]
+    fn parse_multicommand_postdown() {
+        let content = r#"
+            PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+        "#;
+
+        let (_, _, _, post_down) = parse_routing_keywords(content, "multi").expect("Should parse");
+
+        assert_eq!(
+            post_down.unwrap(),
+            "iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE"
+        );
+    }
+    //     #[test]PostDown =
     //     fn parse_write() {
     //         const CONFIG: &str = "[Interface]
     // # Name = node1.example.tld

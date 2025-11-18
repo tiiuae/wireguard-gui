@@ -70,6 +70,41 @@ impl Tunnel {
         Ok(false)
     }
 
+    fn is_cfg_valid(&self) -> Result<(), io::Error> {
+        if self.config.interface.public_key.is_none() {
+            return Err(io::Error::other(
+                "Public key is not defined in interface section",
+            ));
+        }
+
+        if self.config.interface.listen_port.is_none() {
+            return Err(io::Error::other(
+                "Listen port is not defined in interface section",
+            ));
+        }
+
+        if self.config.interface.address.is_none() {
+            return Err(io::Error::other(
+                "IP address is not defined in interface section",
+            ));
+        }
+
+        if self.config.peers.is_empty() {
+            return Err(io::Error::other("No peers defined"));
+        }
+
+        if self
+            .config
+            .peers
+            .iter()
+            .any(|p| p.public_key.as_deref().unwrap_or("").trim().is_empty())
+        {
+            return Err(io::Error::other("Peer public key is empty"));
+        }
+
+        Ok(())
+    }
+
     fn is_wg_iface_running(interface: &str) -> NetState {
         let cmd_str = format!("wg show {interface}");
 
@@ -108,7 +143,7 @@ impl Tunnel {
             let cmd_str = format!("wg-quick {} {}", action, self.name);
 
             let cmd = Command::new("wg-quick")
-                .args([action, &self.name])
+                .args([action, self.path().to_str().unwrap()])
                 .spawn()?;
             debug!("running cmd: {cmd_str}");
             if !wait_cmd_with_timeout(cmd, 3, Some(&cmd_str)).is_ok_and(|(code, _)| code == Some(0))
@@ -132,6 +167,7 @@ impl Tunnel {
                 run_wg_quick("down")?;
             }
             NetState::WgQuickDown => {
+                self.is_cfg_valid()?;
                 run_wg_quick("up")?;
             }
             _ => return Err(io::Error::other("Unknown interface state")),

@@ -58,7 +58,7 @@ pub fn get_log_output() -> LogOutput {
 }
 
 pub fn get_configs_dir() -> PathBuf {
-    CLI_ARGS.app_dir.clone()
+    CLI_ARGS.app_dir.join("configs")
 }
 
 pub fn get_scripts_dir() -> PathBuf {
