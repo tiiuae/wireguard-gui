@@ -16,8 +16,6 @@ use crate::{cli, config::*};
 use getifaddrs::{getifaddrs, InterfaceFlags};
 use log::*;
 use relm4_components::alert::*;
-use std::net::SocketAddr;
-use std::str::FromStr;
 
 #[derive(PartialEq)]
 pub enum NetState {

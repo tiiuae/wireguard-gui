@@ -3,22 +3,22 @@
     SPDX-License-Identifier: Apache-2.0
 */
 
-use std::fs;
 use std::path::PathBuf;
 // use gtk::prelude::*;
-use relm4::factory::{DynamicIndex, FactoryVecDeque};
-use relm4::gtk::subclass::widget;
-use relm4::{gtk::prelude::*, prelude::*};
-use std::rc::Rc;
 use crate::config::*;
 use crate::peer::*;
 use crate::{cli, utils};
 use log::{debug, error};
+use relm4::factory::{DynamicIndex, FactoryVecDeque};
+use relm4::{gtk::prelude::*, prelude::*};
+use std::cell::RefCell;
+use std::rc::Rc;
 pub struct OverviewModel {
     interface: Interface,
     peers: FactoryVecDeque<PeerComp>,
-    routing_scripts: Rc<Vec<RoutingScripts>>,
-    binding_ifaces: Vec<String>,
+    routing_scripts: Rc<RefCell<Vec<RoutingScripts>>>,
+    routing_scripts_list: gtk::StringList,
+    binding_ifaces_list: gtk::StringList,
 }
 
 impl OverviewModel {
@@ -51,12 +51,15 @@ pub enum OverviewInput {
     RemovePeer(DynamicIndex),
     AddPeer,
     SetInterface(InterfaceSetKind, Option<String>),
-    SetRoutingScript(Option<RoutingScripts>),       // new variant
+    SetRoutingScript(Option<RoutingScripts>),
+    InitRoutingScripts(Vec<RoutingScripts>),
+    InitIfaceBindings(Vec<String>),
 }
 
 #[derive(Debug)]
 pub enum OverviewOutput {
     SaveConfig(Box<WireguardConfig>, Option<PathBuf>),
+    AddInitErrors(String),
     Error(String),
 }
 
@@ -213,18 +216,36 @@ impl SimpleComponent for OverviewModel {
                     },
                     #[name = "binding_ifaces"]
                     attach[1, 8, 1, 1] = &gtk::DropDown {
-                          set_model: Some(&gtk::StringList::new(
-                            &std::iter::once("None")
-                                .chain(model.binding_ifaces.iter().map(|s| s.as_str()))
-                                .collect::<Vec<_>>()
-                        )),
+                        set_model: Some(&model.binding_ifaces_list),
+                        #[watch]
+                        set_selected: {
+                            model.interface.binding_iface
+                                .as_ref()
+                                .and_then(|iface| {
+                                    // Find position in the list (which already includes "None" at 0)
+                                    (0..model.binding_ifaces_list.n_items())
+                                        .find(|&i| {
+                                            model.binding_ifaces_list
+                                                .string(i)
+                                                .map(|s| s.as_str() == iface.as_str())
+                                                .unwrap_or(false)
+                                        })
+                                })
+                                .unwrap_or(gtk::INVALID_LIST_POSITION) // Default to "None" at index 0
+                        },
                         connect_selected_notify[sender] => move |dropdown| {
                             if let Some(list) = dropdown.model().and_then(|m| m.downcast::<gtk::StringList>().ok()) {
                                 if let Some(item) = list.string(dropdown.selected()) {
-                                    let name = item.to_string();
+                                    let iface_name = if item.to_string() == "None" {
+                                        None
+                                    } else {
+                                        Some(item.to_string())
+                                    };
+                                    dropdown.set_tooltip_text(Some("Replaces %bindIface in routing script files".into()));
+
                                     sender.input(Self::Input::SetInterface(
                                         InterfaceSetKind::BindingIfaces,
-                                        Some(name)
+                                       iface_name
                                     ));
                                 }
                             }
@@ -238,20 +259,30 @@ impl SimpleComponent for OverviewModel {
                     },
                     #[name = "routing_scripts"]
                     attach[1, 9, 1, 1] = &gtk::DropDown {
-                        set_model: Some(&gtk::StringList::new(
-                            &std::iter::once("None")
-                                .chain(model.routing_scripts.iter().map(|s| s.name.as_str()))
-                                .collect::<Vec<_>>()
-                        )),
+                        set_model: Some(&model.routing_scripts_list),
+                        #[watch]
+                        set_selected: {
+                            if let Some(name) = &model.interface.routing_script_name {
+                                model.routing_scripts.borrow()
+                                    .iter()
+                                    .position(|s| s.name == *name)
+                                    .map(|i| i as u32 + 1)
+                                    .unwrap_or(gtk::INVALID_LIST_POSITION)
+                            } else {
+                                gtk::INVALID_LIST_POSITION
+                            }
+                        },
                         connect_selected_notify[sender, scripts = Rc::clone(&model.routing_scripts)] => move |dropdown| {
                             if let Some(list) = dropdown.model().and_then(|m| m.downcast::<gtk::StringList>().ok()) {
                                 if let Some(item) = list.string(dropdown.selected()) {
                                     let name = item.to_string();
-
+                                    println!("{:#?},item:{}",scripts,name);
+                                    // Borrow once for the search
+                                    let scripts_ref = scripts.borrow();
                                     let selected_script = if name == "None" {
                                         None
                                     } else {
-                                        scripts.iter().find(|s| s.name == name).cloned()
+                                        scripts_ref.iter().find(|s| s.name == name).cloned()
                                     };
 
                                     let tooltip_text = selected_script
@@ -285,35 +316,17 @@ impl SimpleComponent for OverviewModel {
                 PeerOutput::Remove(idx) => Self::Input::RemovePeer(idx),
             });
 
-            let mut model = Self {
-                interface: config.interface,
-                peers,
-                routing_scripts: Rc::new(extract_scripts_metadata()),
-                binding_ifaces: get_binding_interfaces(),
-            };
-
-        // let scripts_clone = model.routing_scripts.clone();
+        let mut model = Self {
+            interface: config.interface,
+            peers,
+            binding_ifaces_list: Default::default(),
+            routing_scripts: Rc::new(Vec::new().into()),
+            routing_scripts_list: Default::default(),
+        };
 
         model.replace_peers(config.peers);
 
         let widgets = view_output!();
-
-        // // Convert script names into &str and prepend "None"
-        // let script_name_list: Vec<&str> = std::iter::once("None")
-        //     .chain(scripts_clone.iter().map(|p| p.name.as_str()))
-        //     .collect();
-
-        // widgets
-        //     .routing_scripts
-        //     .set_model(Some(&gtk::StringList::new(&script_name_list)));
-
-        // widgets.binding_ifaces.set_model(Some(&gtk::StringList::new(
-        //     &model
-        //         .binding_ifaces
-        //         .iter()
-        //         .map(|s| s.as_str())
-        //         .collect::<Vec<_>>(),
-        // )));
 
         ComponentParts { model, widgets }
     }
@@ -346,37 +359,60 @@ impl SimpleComponent for OverviewModel {
             Self::Input::SetRoutingScript(selected_script) => {
                 if let Some(script) = selected_script {
                     // Ensure binding_iface exists
-                    println!("binding-iface: {:?}",self.interface);
+                    println!("binding-iface: {:?}", self.interface);
                     let bind_iface = match &self.interface.binding_iface {
                         Some(iface) if !iface.is_empty() => iface,
                         _ => {
-                            sender
-                                .output_sender()
-                                .emit(OverviewOutput::Error(
-                                    "No binding interface selected".to_string(),
-                                ));
+                            sender.output_sender().emit(OverviewOutput::Error(
+                                "No binding interface selected".to_string(),
+                            ));
                             return;
                         }
                     };
-            
+
                     // Helper to replace %bindIface in Option<String>
                     let replace_bindiface = |field: &Option<String>| -> Option<String> {
                         field.as_ref().map(|s| s.replace("%bindIface", bind_iface))
                     };
-            
+
                     // Assign all script fields with %bindIface replaced
                     self.interface.pre_up = replace_bindiface(&script.pre_up);
                     self.interface.pre_down = replace_bindiface(&script.pre_down);
                     self.interface.post_up = replace_bindiface(&script.post_up);
                     self.interface.post_down = replace_bindiface(&script.post_down);
+                    self.interface.routing_script_name = Some(script.name);
                 } else {
                     self.interface.pre_up = None;
                     self.interface.pre_down = None;
                     self.interface.post_up = None;
                     self.interface.post_down = None;
+                    self.interface.routing_script_name = None;
                 }
             }
-            
+            Self::Input::InitIfaceBindings(b) => {
+                println!("overview: {:#?}", b);
+
+                // Build the new list including "None"
+                let new_items: Vec<&str> = std::iter::once("None")
+                    .chain(b.iter().map(|s| s.as_str()))
+                    .collect();
+
+                // Insert items at the start, no need to remove anything
+                self.binding_ifaces_list.splice(0, 0, &new_items);
+            }
+            Self::Input::InitRoutingScripts(s) => {
+                println!("overview: {:#?}", s);
+
+                // Update the GTK list
+                let new_items: Vec<&str> = std::iter::once("None")
+                    .chain(s.iter().map(|s| s.name.as_str()))
+                    .collect();
+                self.routing_scripts_list.splice(0, 0, &new_items);
+
+                // Update Rc contents
+                self.routing_scripts.borrow_mut().clear();
+                self.routing_scripts.borrow_mut().extend(s);
+            }
             Self::Input::SetInterface(kind, value) => match kind {
                 InterfaceSetKind::Name => self.interface.name = value,
                 InterfaceSetKind::Address => {

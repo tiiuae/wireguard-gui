@@ -28,6 +28,7 @@ pub struct Interface {
     pub pre_down: Option<String>,
     pub post_down: Option<String>,
     pub binding_iface: Option<String>,
+    pub routing_script_name: Option<String>,
 }
 
 /// Defines the VPN settings for a remote peer capable of routing
@@ -50,7 +51,7 @@ pub struct WireguardConfig {
     pub interface: Interface,
     pub peers: Vec<Peer>,
 }
-#[derive(Clone,Default,Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct RoutingScripts {
     pub path: PathBuf,
     pub name: String,
@@ -110,6 +111,17 @@ pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
                 if is_in_interface {
                     match key.as_str() {
                         "# Name" => cfg.interface.name = Some(value),
+                        "# BindingInterface" => {
+                            cfg.interface.binding_iface = Some(value)
+                            // TODO: binding iface bilgisayarda var mı kontrol et varsa atama yap.
+                            // TODO: aynısını binding scripts için de yap
+                        }
+                        "# RoutingScriptName" => {
+                            println!("hello");
+                            cfg.interface.routing_script_name = Some(value)
+                            // TODO: binding iface bilgisayarda var mı kontrol et varsa atama yap.
+                            // TODO: aynısını binding scripts için de yap
+                        }
                         "Address" => {
                             if !utils::is_ip_valid(Some(&value)) {
                                 return Err(format!("Invalid IP address {value}."));
@@ -172,6 +184,14 @@ pub fn write_config(c: &WireguardConfig) -> String {
 
     let kvs = [
         c.interface.name.clone().map(|v| ("# Name", v)),
+        c.interface
+            .binding_iface
+            .clone()
+            .map(|v| ("# BindingInterface", v)),
+        c.interface
+            .routing_script_name
+            .clone()
+            .map(|v| ("# RoutingScriptName", v)),
         c.interface.address.clone().map(|v| ("Address", v)),
         c.interface.listen_port.clone().map(|v| ("ListenPort", v)),
         c.interface.private_key.clone().map(|v| ("PrivateKey", v)),
@@ -237,7 +257,7 @@ pub fn write_configs_to_path(cfgs: &[&WireguardConfig], path: &Path) -> io::Resu
     // Make sure the parent directory exists
     if let Some(parent) = path.parent() {
         if !parent.exists() {
-            println!("Parent directory not found. Creating: {}", parent.display());
+            debug!("Parent directory not found. Creating: {}", parent.display());
             fs::create_dir_all(parent)?;
         }
     }
@@ -251,7 +271,7 @@ pub fn write_configs_to_path(cfgs: &[&WireguardConfig], path: &Path) -> io::Resu
         let content = crate::config::write_config(cfg);
 
         // Print content for debugging
-        debug!("Writing to file: {:?}", file);
+        info!("Writing to file: {:?}", file);
         debug!("Content:\n{}", content);
 
         // Write the content to the file
@@ -317,63 +337,77 @@ fn get_script_paths() -> Vec<PathBuf> {
 }
 
 /// Read scripts and extract routing keywords
-pub fn extract_scripts_metadata() -> Vec<RoutingScripts> {
+pub fn extract_scripts_metadata() -> (Vec<RoutingScripts>, Option<String>) {
     const MAX_CONTENT_CHARS: usize = 4096;
+    let mut errors = Vec::new();
     let mut scripts = Vec::new();
+    let mut seen = std::collections::HashMap::<String, std::path::PathBuf>::new();
+    let mut duplicates = std::collections::HashSet::new();
 
     for path in get_script_paths() {
         let name = path
-            .file_stem()
+            .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("unknown")
             .to_string();
 
-        // Skip scripts that are too large
-        match fs::metadata(&path) {
-            Ok(metadata) => {
-                if metadata.len() as usize > MAX_CONTENT_CHARS {
-                    error!(
-                        "Script {} is too large (>{} chars), skipping",
-                        name, MAX_CONTENT_CHARS
-                    );
-                    continue;
-                }
-            }
-            Err(e) => {
-                error!("Failed to get metadata for {}: {}", name, e);
+        // Detect duplicate names
+        if let Some(prev) = seen.insert(name.clone(), path.clone()) {
+            let msg = format!(
+                "Duplicate script name detected: \"{}\" (files: {:?} and {:?})",
+                name, prev, path
+            );
+            error!("{}", msg);
+            errors.push(msg);
+            duplicates.insert(name);
+            continue;
+        }
+
+        // Skip oversized scripts
+        if let Ok(meta) = fs::metadata(&path) {
+            if meta.len() as usize > MAX_CONTENT_CHARS {
+                let msg = format!("Script {} is too large, skipping", name);
+                error!("{}", msg);
+                errors.push(msg);
                 continue;
             }
         }
 
-        // Read the script content
+        // Read and parse script content
         match fs::read_to_string(&path) {
-            Ok(content) => {
-                // Extract PreUp/PostUp/PreDown/PostDown
-                match parse_routing_keywords(&content, &name) {
-                    Ok((pre_up, post_up, pre_down, post_down)) => {
-                        scripts.push(RoutingScripts {
-                            path,
-                            name,
-                            content,
-                            pre_up,
-                            post_up,
-                            pre_down,
-                            post_down,
-                        });
-                    }
-                    Err(e) => {
-                        error!("{}", e);
-                        continue;
-                    }
+            Ok(content) => match parse_routing_keywords(&content, &name) {
+                Ok((pre_up, post_up, pre_down, post_down)) => scripts.push(RoutingScripts {
+                    path,
+                    name,
+                    content,
+                    pre_up,
+                    post_up,
+                    pre_down,
+                    post_down,
+                }),
+                Err(e) => {
+                    errors.push(e.clone());
+                    error!("{}", e);
                 }
-            }
+            },
             Err(e) => {
-                error!("Failed to read script {}: {}", name, e);
+                let msg = format!("Failed to read script {}: {}", name, e);
+                error!("{}", msg);
+                errors.push(msg);
             }
         }
     }
 
-    scripts
+    // Remove scripts whose name appeared more than once
+    scripts.retain(|s| !duplicates.contains(&s.name));
+
+    let combined_errors = if errors.is_empty() {
+        None
+    } else {
+        Some(errors.join("\n"))
+    };
+
+    (scripts, combined_errors)
 }
 
 /// Validate the script content.

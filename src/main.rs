@@ -12,9 +12,10 @@ use relm4_components::open_button::{OpenButton, OpenButtonSettings};
 use relm4_components::open_dialog::OpenDialogSettings;
 use relm4_components::save_dialog::*;
 use std::os::unix::fs::MetadataExt;
+use std::rc::Rc;
 use std::{fs, path::PathBuf};
 use syslog::{BasicLogger, Facility, Formatter3164};
-use wireguard_gui::{cli::*, config::*, generator::*, overview::*, tunnel::*};
+use wireguard_gui::{cli::*, config::*, generator::*, overview::*, tunnel::*, utils::*};
 struct App {
     tunnels: FactoryVecDeque<Tunnel>,
     selected_tunnel_idx: Option<usize>,
@@ -23,6 +24,8 @@ struct App {
     import_button: Controller<OpenButton>,
     alert_dialog: Controller<Alert>,
     export_dialog: Controller<SaveDialog>,
+    init_err_buffer: Vec<String>,
+    init_complete: bool,
 }
 
 #[derive(Debug)]
@@ -39,6 +42,10 @@ enum AppMsg {
     ShowGenerator,
     Error(String),
     Info(String),
+    AddInitErrors(String),
+    InitComplete,
+    OverviewInitScripts(Vec<RoutingScripts>),
+    OverviewInitIfaceBindings(Vec<String>),
     Ignore,
 }
 
@@ -126,6 +133,14 @@ impl SimpleComponent for App {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        let (scripts, err) = extract_scripts_metadata();
+
+        if err.is_some() {
+            sender.input(Self::Input::AddInitErrors(err.unwrap()));
+        }
+
+        let binding_ifaces = get_binding_interfaces();
+
         let mut tunnels = FactoryVecDeque::builder()
             .launch(gtk::ListBox::default())
             .forward(sender.input_sender(), |output| match output {
@@ -135,15 +150,61 @@ impl SimpleComponent for App {
             });
 
         match wireguard_gui::utils::load_existing_configurations() {
-            Ok(cfgs) => {
+            Ok((cfgs, err)) => {
                 let mut g = tunnels.guard();
+                /*
+                if there is no match for saved
+                BindingInterface and RoutingScriptName sections,
+                remove them from the config files
+                */
 
-                for cfg in cfgs {
+                for mut cfg in cfgs {
+                    let mut needs_save = false;
+
+                    // Validate binding interface
+                    if let Some(ref iface) = cfg.interface.binding_iface {
+                        if !binding_ifaces.contains(iface) {
+                            cfg.interface.binding_iface = None;
+                            needs_save = true;
+                        }
+                    }
+
+                    // Validate routing script
+                    if let Some(ref script_name) = cfg.interface.routing_script_name {
+                        if !scripts.iter().any(|s| s.name == *script_name) {
+                            // Clear all routing script related fields
+                            cfg.interface.routing_script_name = None;
+                            cfg.interface.pre_up = None;
+                            cfg.interface.pre_down = None;
+                            cfg.interface.post_up = None;
+                            cfg.interface.post_down = None;
+                            needs_save = true;
+                        }
+                    }
+                    // Save the modified config back to disk if changes were made
+                    if needs_save {
+                        if let Some(ref name) = cfg.interface.name {
+                            let path = get_configs_dir().join(format!("{name}.conf"));
+                            if let Err(e) = write_configs_to_path(&[&cfg], &path) {
+                                sender.input(Self::Input::AddInitErrors(format!(
+                                    "Failed to update config '{}': {}",
+                                    name, e
+                                )));
+                                continue;
+                            }
+                        }
+                    }
                     g.push_back(cfg);
+                }
+
+                if err.is_some() {
+                    sender.input(Self::Input::AddInitErrors(err.unwrap()));
                 }
             }
             Err(err) => {
-                error!("Could not load existing configurations: {:#?}", err);
+                let msg = format!("Could not load existing configurations: {:#?}", err);
+                error!("{}", msg);
+                sender.input(Self::Input::AddInitErrors(msg));
             }
         };
 
@@ -193,6 +254,7 @@ impl SimpleComponent for App {
                     Self::Input::SaveConfigFinish(config, path)
                 }
                 OverviewOutput::Error(msg) => Self::Input::Error(msg),
+                OverviewOutput::AddInitErrors(msg) => Self::Input::AddInitErrors(msg),
             });
 
         let generator =
@@ -223,6 +285,8 @@ impl SimpleComponent for App {
             generator,
             alert_dialog,
             export_dialog,
+            init_err_buffer: Vec::new(),
+            init_complete: false,
         };
 
         let tunnels_list_box = model.tunnels.widget();
@@ -241,6 +305,19 @@ impl SimpleComponent for App {
 
         let widgets = view_output!();
 
+        /* set routing scripts for overview model */
+        sender
+            .input_sender()
+            .emit(AppMsg::OverviewInitScripts(scripts));
+
+        /* set binding interfaces for overview model */
+        sender
+            .input_sender()
+            .emit(AppMsg::OverviewInitIfaceBindings(binding_ifaces));
+
+        gtk::glib::timeout_add_local_once(tokio::time::Duration::from_millis(100), move || {
+            sender.input(AppMsg::InitComplete);
+        });
         ComponentParts { model, widgets }
     }
 
@@ -356,11 +433,7 @@ impl SimpleComponent for App {
                     }
                     let new_tunnel = Tunnel::new(*config);
                     let path = match path {
-                        Some(p)
-                            if p.starts_with("/home") && p.parent().is_some_and(|p| p.is_dir()) =>
-                        {
-                            p
-                        }
+                        Some(p) if validate_export_path(&p) => p,
                         Some(_) => {
                             sender.input(Self::Input::Error(
                                 "Config file can be exported only under 'home' directory".into(),
@@ -421,6 +494,14 @@ impl SimpleComponent for App {
             Self::Input::ExportConfigFinish(path) => {
                 self.overview.emit(OverviewInput::CollectTunnel(Some(path)));
             }
+            Self::Input::OverviewInitScripts(s) => {
+                println!("main: {:#?}", s.clone());
+                self.overview.emit(OverviewInput::InitRoutingScripts(s));
+            }
+            Self::Input::OverviewInitIfaceBindings(b) => {
+                println!("main: {:#?}", b.clone());
+                self.overview.emit(OverviewInput::InitIfaceBindings(b));
+            }
             Self::Input::Error(msg) => {
                 self.alert_dialog
                     .state()
@@ -443,6 +524,26 @@ impl SimpleComponent for App {
                 self.alert_dialog.state().get_mut().model.settings.text =
                     Some(String::from("Info"));
                 self.alert_dialog.emit(AlertMsg::Show);
+            }
+            Self::Input::AddInitErrors(msg) => {
+                self.init_err_buffer.push(msg);
+            }
+            Self::Input::InitComplete => {
+                self.init_complete = true;
+
+                if !self.init_err_buffer.is_empty() {
+                    // Number each error: 1) ..., 2) ..., 3) ...
+                    let combined = self
+                        .init_err_buffer
+                        .iter()
+                        .enumerate()
+                        .map(|(i, err)| format!("{}) {}", i + 1, err))
+                        .collect::<Vec<_>>()
+                        .join("\n\n");
+
+                    self.init_err_buffer.clear();
+                    sender.input(Self::Input::Error(combined));
+                }
             }
             Self::Input::Ignore => (),
         }
