@@ -22,11 +22,6 @@ pub struct GenerationSettings {
 impl TryFrom<HashMap<String, Option<String>>> for GenerationSettings {
     type Error = &'static str;
     fn try_from(mut map: HashMap<String, Option<String>>) -> Result<Self, Self::Error> {
-        let generate_iptables_rule = |action: &str, interface: &str| -> String {
-            format!(
-                "iptables {action} FORWARD -i {interface} -j ACCEPT; iptables -t nat {action} POSTROUTING -o ethint0 -j MASQUERADE")
-        };
-
         let tunnel_iface_name = map
             .remove("Tunnel interface name")
             .flatten()
