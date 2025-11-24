@@ -3,6 +3,7 @@
     SPDX-License-Identifier: Apache-2.0
 */
 use crate::{cli, utils};
+use anyhow::Result;
 use log::{debug, error, info, warn};
 use nix::unistd::{chown, Gid, Group, Uid, User};
 use pnet_datalink::interfaces;
@@ -29,6 +30,7 @@ pub struct Interface {
     pub post_down: Option<String>,
     pub binding_iface: Option<String>,
     pub routing_script_name: Option<String>,
+    pub has_script_bind_iface: bool,
 }
 
 /// Defines the VPN settings for a remote peer capable of routing
@@ -60,6 +62,7 @@ pub struct RoutingScripts {
     pub post_up: Option<String>,
     pub pre_down: Option<String>,
     pub post_down: Option<String>,
+    pub has_bind_interface: bool,
 }
 
 pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
@@ -111,13 +114,12 @@ pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
                 if is_in_interface {
                     match key.as_str() {
                         "# Name" => cfg.interface.name = Some(value),
-                        "# BindingInterface" => {
+                        "# BindIface" => {
                             cfg.interface.binding_iface = Some(value)
                             // TODO: binding iface bilgisayarda var mı kontrol et varsa atama yap.
                             // TODO: aynısını binding scripts için de yap
                         }
                         "# RoutingScriptName" => {
-                            println!("hello");
                             cfg.interface.routing_script_name = Some(value)
                             // TODO: binding iface bilgisayarda var mı kontrol et varsa atama yap.
                             // TODO: aynısını binding scripts için de yap
@@ -181,13 +183,19 @@ pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
 
 pub fn write_config(c: &WireguardConfig) -> String {
     let mut res = String::from("[Interface]\n");
-
-    let kvs = [
-        c.interface.name.clone().map(|v| ("# Name", v)),
+    // Conditional BindIface only when has_script_bind_iface == true
+    let binding_iface_entry = if c.interface.has_script_bind_iface {
         c.interface
             .binding_iface
             .clone()
-            .map(|v| ("# BindingInterface", v)),
+            .map(|v| ("# BindIface", v))
+    } else {
+        None
+    };
+
+    let kvs = [
+        c.interface.name.clone().map(|v| ("# Name", v)),
+        binding_iface_entry,
         c.interface
             .routing_script_name
             .clone()
@@ -376,15 +384,18 @@ pub fn extract_scripts_metadata() -> (Vec<RoutingScripts>, Option<String>) {
         // Read and parse script content
         match fs::read_to_string(&path) {
             Ok(content) => match parse_routing_keywords(&content, &name) {
-                Ok((pre_up, post_up, pre_down, post_down)) => scripts.push(RoutingScripts {
-                    path,
-                    name,
-                    content,
-                    pre_up,
-                    post_up,
-                    pre_down,
-                    post_down,
-                }),
+                Ok((pre_up, post_up, pre_down, post_down, has_bind_interface)) => {
+                    scripts.push(RoutingScripts {
+                        path,
+                        name,
+                        content,
+                        pre_up,
+                        post_up,
+                        pre_down,
+                        post_down,
+                        has_bind_interface,
+                    })
+                }
                 Err(e) => {
                     errors.push(e.clone());
                     error!("{}", e);
@@ -423,6 +434,7 @@ fn parse_routing_keywords(
         Option<String>,
         Option<String>,
         Option<String>,
+        bool,
     ),
     String,
 > {
@@ -430,6 +442,7 @@ fn parse_routing_keywords(
     let mut post_up: Option<String> = None;
     let mut pre_down: Option<String> = None;
     let mut post_down: Option<String> = None;
+    let mut has_bind_iface = false;
 
     for raw_line in content.lines() {
         let line = raw_line.trim();
@@ -483,6 +496,10 @@ fn parse_routing_keywords(
                     cmd, keyword, script_name
                 ));
             }
+            // Check if any command includes %bindIface
+            if cmd.contains("%bindIface") {
+                has_bind_iface = true;
+            }
         }
 
         // Join back
@@ -504,7 +521,7 @@ fn parse_routing_keywords(
         ));
     }
 
-    Ok((pre_up, post_up, pre_down, post_down))
+    Ok((pre_up, post_up, pre_down, post_down, has_bind_iface))
 }
 
 pub fn get_binding_interfaces() -> Vec<String> {
@@ -528,6 +545,86 @@ pub fn get_binding_interfaces() -> Vec<String> {
         .collect()
 }
 
+/*
+Return Err -> there is a problem and needs_save,err_msg
+*/
+pub fn validate_assign_routing_script(
+    scripts: &[RoutingScripts],
+    cfg: &mut WireguardConfig,
+) -> anyhow::Result<()> {
+    if let Some(script_name) = &cfg.interface.routing_script_name {
+        // Check if the script name exists in the provided list
+        let matched_script = scripts.iter().find(|s| s.name == *script_name);
+
+        if let Some(script) = matched_script {
+            macro_rules! compare_field {
+                ($field:ident) => {
+                    match (&cfg.interface.$field, &script.$field) {
+                        (Some(cfg_val), Some(template)) => {
+                            let cfg_norm = if let Some(bind_iface) = &cfg.interface.binding_iface {
+                                cfg_val.replace(bind_iface, "%bindIface")
+                            } else {
+                                cfg_val.clone()
+                            };
+
+                            if &cfg_norm != template {
+                                return Err(anyhow::anyhow!(
+                                    "{} script does not match the expected template.",
+                                    stringify!($field)
+                                ));
+                            }
+                        }
+                        (None, None) => {}
+                        _ => {
+                            return Err(anyhow::anyhow!(
+                                "{} scripts are not identical",
+                                stringify!($field)
+                            ))
+                        }
+                    }
+                };
+            }
+
+            compare_field!(pre_up);
+            compare_field!(post_up);
+            compare_field!(pre_down);
+            compare_field!(post_down);
+
+            cfg.interface.has_script_bind_iface = script.has_bind_interface;
+        } else {
+            // Script name not found in the list
+            let msg = format!(
+                "'{script_name}' is not available or valid.\n\
+                 Please select again from the menu."
+            );
+            error!("{}", msg);
+            return Err(anyhow::anyhow!(msg));
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_binding_iface(
+    binding_ifaces: &[String],
+    cfg: &WireguardConfig,
+) -> anyhow::Result<()> {
+    if let Some(iface) = &cfg.interface.binding_iface {
+        if !binding_ifaces.contains(&iface) {
+            return Err(anyhow::anyhow!("Invalid binding interface: {iface}"));
+        }
+    }
+    Ok(())
+}
+
+pub fn reset_interface_hooks(cfg: &mut WireguardConfig) {
+    cfg.interface.binding_iface = None;
+    cfg.interface.routing_script_name = None;
+    cfg.interface.pre_up = None;
+    cfg.interface.pre_down = None;
+    cfg.interface.post_up = None;
+    cfg.interface.post_down = None;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -541,7 +638,7 @@ mod tests {
             PreUp = iptables -A INPUT -i %i -j ACCEPT
         "#;
 
-        let (pre_up, post_up, pre_down, post_down) =
+        let (pre_up, post_up, pre_down, post_down, has_bind_interface) =
             parse_routing_keywords(content, "test").expect("Should parse");
 
         assert_eq!(pre_up.unwrap(), "iptables -A INPUT -i %i -j ACCEPT");
@@ -561,7 +658,7 @@ mod tests {
             PostDown = ip rule delete ipproto tcp dport 22 table 1234
         "#;
 
-        let (pre_up, post_up, pre_down, post_down) =
+        let (pre_up, post_up, pre_down, post_down, has_bind_interface) =
             parse_routing_keywords(content, "test").expect("Should parse");
 
         assert_eq!(
@@ -592,7 +689,7 @@ mod tests {
             # end
         "#;
 
-        let (pre_up, post_up, pre_down, post_down) =
+        let (pre_up, post_up, pre_down, post_down, has_bind_interface) =
             parse_routing_keywords(content, "test").expect("Should parse");
 
         assert!(pre_up.is_none());
@@ -651,7 +748,8 @@ mod tests {
             PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
         "#;
 
-        let (_, _, _, post_down) = parse_routing_keywords(content, "multi").expect("Should parse");
+        let (_, _, _, post_down, has_bind_interface) =
+            parse_routing_keywords(content, "multi").expect("Should parse");
 
         assert_eq!(
             post_down.unwrap(),

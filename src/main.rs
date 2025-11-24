@@ -12,7 +12,6 @@ use relm4_components::open_button::{OpenButton, OpenButtonSettings};
 use relm4_components::open_dialog::OpenDialogSettings;
 use relm4_components::save_dialog::*;
 use std::os::unix::fs::MetadataExt;
-use std::rc::Rc;
 use std::{fs, path::PathBuf};
 use syslog::{BasicLogger, Facility, Formatter3164};
 use wireguard_gui::{cli::*, config::*, generator::*, overview::*, tunnel::*, utils::*};
@@ -157,32 +156,23 @@ impl SimpleComponent for App {
                 BindingInterface and RoutingScriptName sections,
                 remove them from the config files
                 */
-
                 for mut cfg in cfgs {
                     let mut needs_save = false;
 
                     // Validate binding interface
-                    if let Some(ref iface) = cfg.interface.binding_iface {
-                        if !binding_ifaces.contains(iface) {
-                            cfg.interface.binding_iface = None;
-                            needs_save = true;
-                        }
+                    if let Err(err) = validate_binding_iface(&binding_ifaces, &cfg) {
+                        sender.input(Self::Input::AddInitErrors(err.to_string()));
+                        needs_save = true;
+                    }
+                    // Validate routing script
+                    else if let Err(err) = validate_assign_routing_script(&scripts, &mut cfg) {
+                        sender.input(Self::Input::AddInitErrors(err.to_string()));
+                        needs_save = true;
                     }
 
-                    // Validate routing script
-                    if let Some(ref script_name) = cfg.interface.routing_script_name {
-                        if !scripts.iter().any(|s| s.name == *script_name) {
-                            // Clear all routing script related fields
-                            cfg.interface.routing_script_name = None;
-                            cfg.interface.pre_up = None;
-                            cfg.interface.pre_down = None;
-                            cfg.interface.post_up = None;
-                            cfg.interface.post_down = None;
-                            needs_save = true;
-                        }
-                    }
                     // Save the modified config back to disk if changes were made
                     if needs_save {
+                        reset_interface_hooks(&mut cfg);
                         if let Some(ref name) = cfg.interface.name {
                             let path = get_configs_dir().join(format!("{name}.conf"));
                             if let Err(e) = write_configs_to_path(&[&cfg], &path) {
@@ -385,6 +375,12 @@ impl SimpleComponent for App {
                     return;
                 };
 
+                /*
+                Importing files from external source.
+                Routing scripts and binding interface parameters should be removed.
+                 */
+                reset_interface_hooks(&mut config);
+
                 if config.interface.name.is_none() {
                     let name = path.file_stem().and_then(|s| s.to_str().map(str::to_owned));
 
@@ -495,11 +491,9 @@ impl SimpleComponent for App {
                 self.overview.emit(OverviewInput::CollectTunnel(Some(path)));
             }
             Self::Input::OverviewInitScripts(s) => {
-                println!("main: {:#?}", s.clone());
                 self.overview.emit(OverviewInput::InitRoutingScripts(s));
             }
             Self::Input::OverviewInitIfaceBindings(b) => {
-                println!("main: {:#?}", b.clone());
                 self.overview.emit(OverviewInput::InitIfaceBindings(b));
             }
             Self::Input::Error(msg) => {
