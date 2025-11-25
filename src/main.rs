@@ -135,8 +135,8 @@ impl SimpleComponent for App {
     ) -> ComponentParts<Self> {
         let (scripts, err) = extract_scripts_metadata();
 
-        if err.is_some() {
-            sender.input(Self::Input::AddInitErrors(err.unwrap()));
+        if let Some(err_msg) = err {
+            sender.input(Self::Input::AddInitErrors(err_msg));
         }
 
         let binding_ifaces = get_binding_interfaces();
@@ -188,9 +188,8 @@ impl SimpleComponent for App {
 
                     g.push_back((cfg, true));
                 }
-
-                if err.is_some() {
-                    sender.input(Self::Input::AddInitErrors(err.unwrap()));
+                if let Some(err_msg) = err {
+                    sender.input(Self::Input::AddInitErrors(err_msg));
                 }
             }
             Err(err) => {
@@ -419,9 +418,8 @@ impl SimpleComponent for App {
 
                 if let Some(idx) = self.selected_tunnel_idx {
                     if let Some(selected_tunnel) = self.tunnels.guard().get_mut(idx) {
-                        println!("Tunnel modified: {:#?}", selected_tunnel);
                         selected_tunnel.mark_dirty();
-                        // Optionally update UI (like enabling "Save" button) by storing dirty state somewhere
+                        // TODO: update UI (like enabling "Save" button) by storing dirty state somewhere
                     }
                 }
             }

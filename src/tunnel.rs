@@ -16,6 +16,7 @@ use crate::{cli, config::*};
 use getifaddrs::{getifaddrs, InterfaceFlags};
 use log::*;
 use relm4_components::alert::*;
+use std::process::Stdio;
 
 #[derive(PartialEq)]
 pub enum NetState {
@@ -152,15 +153,20 @@ impl Tunnel {
 
             let cmd = Command::new("wg-quick")
                 .args([action, self.path().to_str().unwrap()])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
                 .spawn()?;
             debug!("running cmd: {cmd_str}");
-            if !wait_cmd_with_timeout(cmd, 3, Some(&cmd_str)).is_ok_and(|(code, _)| code == Some(0))
-            {
-                error!("Failed to execute wg-quick {} {}", action, &self.name);
+            let (status_code, output) = wait_cmd_with_timeout(cmd, 5, Some(&cmd_str))?;
+
+            if status_code != Some(0) {
+                // Include the actual output (stdout+stderr) in the error
                 return Err(io::Error::other(format!(
-                    "Failed to execute wg-quick {action}",
+                    "Failed to execute wg-quick {action}: {}",
+                    output.trim()
                 )));
             }
+
             Ok(())
         };
 

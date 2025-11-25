@@ -112,27 +112,31 @@ pub fn wait_cmd_with_timeout(
         }
     };
 
-    // Read stdout after killing the process
-    let mut cmd_response = String::new();
-
-    // Borrow stdout and read the output into `cmd_response`
+    // Read stdout and stderr
+    let mut stdout_buf = String::new();
     if let Some(stdout) = cmd.stdout.as_mut() {
-        stdout.read_to_string(&mut cmd_response)?;
+        stdout.read_to_string(&mut stdout_buf)?;
     }
 
-    if let (Some(cmd_str), Some(status_code)) = (cmd_str, status_code) {
-        if status_code != 0 {
+    let mut stderr_buf = String::new();
+    if let Some(stderr) = cmd.stderr.as_mut() {
+        stderr.read_to_string(&mut stderr_buf)?;
+    }
+
+    let combined_output = format!("{}\n{}", stdout_buf, stderr_buf);
+
+    if let (Some(cmd_str), Some(status)) = (cmd_str, status_code) {
+        if status != 0 {
             error!(
-                "Cmd: {} failed with status code: {status_code},response:{cmd_response}",
-                cmd_str
+                "Cmd: {} failed with status code {}. Output:\n{}",
+                cmd_str, status, combined_output
             );
         } else {
-            debug!("Cmd: {} is successful ,response:{cmd_response}", cmd_str);
+            debug!("Cmd: {} succeeded. Output:\n{}", cmd_str, combined_output);
         }
     }
 
-    // Return both the status code and the output
-    Ok((status_code, cmd_response))
+    Ok((status_code, combined_output))
 }
 
 pub fn is_ip_valid(ip: Option<&str>) -> bool {

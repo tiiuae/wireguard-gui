@@ -72,6 +72,7 @@ impl GenerationSettings {
                 listen_port: Some(listen_port.clone()),
                 public_key: Some(host_public_key),
                 private_key: Some(host_private_key),
+                routing_script_name: None,
                 ..Default::default()
             },
             peers: vec![],
