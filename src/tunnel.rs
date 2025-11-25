@@ -32,10 +32,11 @@ pub struct Tunnel {
     pub active: bool,
     pub pending_remove: Option<DynamicIndex>,
     alert_dialog: Option<Controller<Alert>>,
+    pub saved: bool,
 }
 
 impl Tunnel {
-    pub fn new(config: WireguardConfig) -> Self {
+    pub fn new(config: WireguardConfig, saved: bool) -> Self {
         let name = config.interface.name.clone().unwrap_or("unknown".into());
 
         let active = Self::is_wg_iface_running(&name) == NetState::WgQuickUp;
@@ -46,13 +47,22 @@ impl Tunnel {
             active,
             pending_remove: None,
             alert_dialog: None,
+            saved,
         }
+    }
+    pub fn mark_saved(&mut self) {
+        self.saved = true;
+    }
+
+    pub fn mark_dirty(&mut self) {
+        self.saved = false;
     }
     pub fn update_from(&mut self, other: Tunnel) {
         self.active = other.active;
         self.pending_remove = other.pending_remove;
         self.config = other.config;
         self.name = other.name;
+        self.mark_saved();
     }
     fn is_interface_up(interface_name: &str) -> Result<bool, std::io::Error> {
         let ifaddrs =
@@ -191,7 +201,7 @@ pub enum TunnelOutput {
 
 #[relm4::factory(pub)]
 impl FactoryComponent for Tunnel {
-    type Init = WireguardConfig;
+    type Init = (WireguardConfig, bool);
     type Input = TunnelMsg;
     type Output = TunnelOutput;
     type CommandOutput = ();
@@ -224,8 +234,13 @@ impl FactoryComponent for Tunnel {
         }
     }
 
-    fn init_model(config: Self::Init, _index: &DynamicIndex, sender: FactorySender<Self>) -> Self {
-        let mut new_self_cfg = Self::new(config);
+    fn init_model(
+        (config, saved): Self::Init,
+        _index: &DynamicIndex,
+        sender: FactorySender<Self>,
+    ) -> Self {
+        let mut new_self_cfg = Self::new(config, saved);
+
         let alert_dialog = Alert::builder()
             .launch(AlertSettings {
                 text: Some(String::from("Are you sure to remove this tunnel?")),
@@ -239,7 +254,6 @@ impl FactoryComponent for Tunnel {
                 AlertResponse::Confirm => Self::Input::RemoveConfirmed,
                 _ => Self::Input::Ignore,
             });
-
         new_self_cfg.alert_dialog = Some(alert_dialog);
 
         new_self_cfg
@@ -253,6 +267,13 @@ impl FactoryComponent for Tunnel {
     ) {
         match msg {
             Self::Input::Toggle => {
+                if !self.active && !self.saved {
+                    sender.output_sender().emit(TunnelOutput::Error(
+                        "You must save the configuration before activating the tunnel.".into(),
+                    ));
+                    widgets.switch.set_state(false);
+                    return;
+                }
                 match self.try_toggle() {
                     Ok(_) => self.active = !self.active,
                     Err(err) => sender

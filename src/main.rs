@@ -45,6 +45,7 @@ enum AppMsg {
     InitComplete,
     OverviewInitScripts(Vec<RoutingScripts>),
     OverviewInitIfaceBindings(Vec<String>),
+    TunnelModified,
     Ignore,
 }
 
@@ -184,7 +185,8 @@ impl SimpleComponent for App {
                             }
                         }
                     }
-                    g.push_back(cfg);
+
+                    g.push_back((cfg, true));
                 }
 
                 if err.is_some() {
@@ -245,6 +247,7 @@ impl SimpleComponent for App {
                 }
                 OverviewOutput::Error(msg) => Self::Input::Error(msg),
                 OverviewOutput::AddInitErrors(msg) => Self::Input::AddInitErrors(msg),
+                OverviewOutput::FieldsModified => Self::Input::TunnelModified,
             });
 
         let generator =
@@ -305,7 +308,7 @@ impl SimpleComponent for App {
             .input_sender()
             .emit(AppMsg::OverviewInitIfaceBindings(binding_ifaces));
 
-        gtk::glib::timeout_add_local_once(tokio::time::Duration::from_millis(100), move || {
+        gtk::glib::idle_add_local_once(move || {
             sender.input(AppMsg::InitComplete);
         });
         ComponentParts { model, widgets }
@@ -333,7 +336,7 @@ impl SimpleComponent for App {
                     return;
                 }
 
-                tunnels.push_back(*config);
+                tunnels.push_back((*config, false));
             }
             Self::Input::RemoveTunnel(idx) => {
                 // 1) Lock and inspect the list
@@ -408,6 +411,20 @@ impl SimpleComponent for App {
 
                 sender.input(Self::Input::AddTunnel(Box::new(config)));
             }
+            Self::Input::TunnelModified => {
+                if !self.init_complete {
+                    // Ignore modifications during init
+                    return;
+                }
+
+                if let Some(idx) = self.selected_tunnel_idx {
+                    if let Some(selected_tunnel) = self.tunnels.guard().get_mut(idx) {
+                        println!("Tunnel modified: {:#?}", selected_tunnel);
+                        selected_tunnel.mark_dirty();
+                        // Optionally update UI (like enabling "Save" button) by storing dirty state somewhere
+                    }
+                }
+            }
             Self::Input::SaveConfigInitiate => {
                 self.overview.emit(OverviewInput::CollectTunnel(None));
             }
@@ -427,7 +444,7 @@ impl SimpleComponent for App {
                         ));
                         return;
                     }
-                    let new_tunnel = Tunnel::new(*config);
+                    let new_tunnel = Tunnel::new(*config, false);
                     let path = match path {
                         Some(p) if validate_export_path(&p) => p,
                         Some(_) => {
