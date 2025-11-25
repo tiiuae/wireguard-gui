@@ -7,8 +7,8 @@ use std::path::PathBuf;
 // use gtk::prelude::*;
 use crate::config::*;
 use crate::peer::*;
-use crate::{cli, utils};
-use log::{debug, error};
+use crate::utils;
+use log::debug;
 use relm4::factory::{DynamicIndex, FactoryVecDeque};
 use relm4::{gtk::prelude::*, prelude::*};
 use std::cell::RefCell;
@@ -55,6 +55,7 @@ pub enum OverviewInput {
     SetRoutingScript(Option<RoutingScripts>),
     InitRoutingScripts(Vec<RoutingScripts>),
     InitIfaceBindings(Vec<String>),
+    PeerFieldsModified,
 }
 
 #[derive(Debug)]
@@ -240,12 +241,12 @@ impl SimpleComponent for OverviewModel {
                         connect_selected_notify[sender] => move |dropdown| {
                             if let Some(list) = dropdown.model().and_then(|m| m.downcast::<gtk::StringList>().ok()) {
                                 if let Some(item) = list.string(dropdown.selected()) {
-                                    let iface_name = if item.to_string() == "None" {
+                                    let iface_name = if item == "None" {
                                         None
                                     } else {
                                         Some(item.to_string())
                                     };
-                                    dropdown.set_tooltip_text(Some("Replaces %bindIface in routing script files".into()));
+                                    dropdown.set_tooltip_text(Some("Replaces %bindIface in routing script files"));
 
                                     sender.input(Self::Input::SetInterface(
                                         InterfaceSetKind::BindingIfaces,
@@ -318,6 +319,7 @@ impl SimpleComponent for OverviewModel {
             .launch(gtk::Box::new(gtk::Orientation::Vertical, 5))
             .forward(sender.input_sender(), |output| match output {
                 PeerOutput::Remove(idx) => Self::Input::RemovePeer(idx),
+                PeerOutput::FieldsModified => Self::Input::PeerFieldsModified,
             });
 
         let mut model = Self {
@@ -361,6 +363,10 @@ impl SimpleComponent for OverviewModel {
                 // notify parent that the overview has unsaved changes
                 sender.output_sender().emit(Self::Output::FieldsModified);
             }
+            Self::Input::PeerFieldsModified => {
+                // notify parent that the overview has unsaved changes
+                sender.output_sender().emit(Self::Output::FieldsModified);
+            }
             Self::Input::AddPeer => {
                 let mut peers = self.peers.guard();
                 peers.push_back(Peer::default());
@@ -372,8 +378,8 @@ impl SimpleComponent for OverviewModel {
                     self.interface.has_script_bind_iface = script.has_bind_interface;
                     // Disable/Enable dropdown when script requires bind interface
                     self.binding_ifaces_enabled = script.has_bind_interface;
-
                     self.interface.routing_script_name = Some(script.name);
+                    self.interface.fwmark = script.fwmark;
 
                     if self.binding_ifaces_enabled {
                         // Ensure binding_iface exists
@@ -407,6 +413,7 @@ impl SimpleComponent for OverviewModel {
                     self.interface.post_up = None;
                     self.interface.post_down = None;
                     self.interface.routing_script_name = None;
+                    self.interface.fwmark = None;
                     self.interface.has_script_bind_iface = false;
                 }
 
