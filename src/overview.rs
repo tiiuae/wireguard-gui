@@ -61,6 +61,7 @@ pub enum OverviewInput {
 pub enum OverviewOutput {
     SaveConfig(Box<WireguardConfig>, Option<PathBuf>),
     AddInitErrors(String),
+    FieldsModified,
     Error(String),
 }
 
@@ -357,10 +358,14 @@ impl SimpleComponent for OverviewModel {
             Self::Input::RemovePeer(idx) => {
                 let mut peers = self.peers.guard();
                 peers.remove(idx.current_index());
+                // notify parent that the overview has unsaved changes
+                sender.output_sender().emit(Self::Output::FieldsModified);
             }
             Self::Input::AddPeer => {
                 let mut peers = self.peers.guard();
                 peers.push_back(Peer::default());
+                // notify parent that the overview has unsaved changes
+                sender.output_sender().emit(Self::Output::FieldsModified);
             }
             Self::Input::SetRoutingScript(selected_script) => {
                 if let Some(script) = selected_script {
@@ -405,7 +410,8 @@ impl SimpleComponent for OverviewModel {
                     self.interface.has_script_bind_iface = false;
                 }
 
-                // TODO: enforce user to click save
+                // notify parent that the overview has unsaved changes
+                sender.output_sender().emit(Self::Output::FieldsModified);
             }
             Self::Input::InitIfaceBindings(b) => {
                 // Build the new list including "None"
@@ -427,57 +433,59 @@ impl SimpleComponent for OverviewModel {
                 self.routing_scripts.borrow_mut().clear();
                 self.routing_scripts.borrow_mut().extend(s);
             }
-            Self::Input::SetInterface(kind, value) => match kind {
-                InterfaceSetKind::Name => self.interface.name = value,
-                InterfaceSetKind::Address => {
-                    if !utils::is_ip_valid(value.as_deref()) {
-                        sender
-                            .output_sender()
-                            .emit(Self::Output::Error("Invalid IP address".to_string()));
-                        return;
-                    }
-                    self.interface.address = value;
-                }
-                InterfaceSetKind::ListenPort => self.interface.listen_port = value,
-                InterfaceSetKind::PrivateKey => {
-                    let Some(private_key) = value.clone() else {
-                        return;
-                    };
-                    let public_key = match utils::generate_public_key(private_key.clone()) {
-                        Ok(key) => key,
-                        Err(e) => {
+            Self::Input::SetInterface(kind, value) => {
+                match kind {
+                    InterfaceSetKind::Name => self.interface.name = value,
+                    InterfaceSetKind::Address => {
+                        if !utils::is_ip_valid(value.as_deref()) {
                             sender
                                 .output_sender()
-                                .emit(Self::Output::Error(e.to_string()));
+                                .emit(Self::Output::Error("Invalid IP address".to_string()));
                             return;
                         }
-                    };
-                    self.interface.public_key = Some(public_key);
-                    self.interface.private_key = value;
+                        self.interface.address = value;
+                    }
+                    InterfaceSetKind::ListenPort => self.interface.listen_port = value,
+                    InterfaceSetKind::PrivateKey => {
+                        let Some(private_key) = value.clone() else {
+                            return;
+                        };
+                        let public_key = match utils::generate_public_key(private_key.clone()) {
+                            Ok(key) => key,
+                            Err(e) => {
+                                sender
+                                    .output_sender()
+                                    .emit(Self::Output::Error(e.to_string()));
+                                return;
+                            }
+                        };
+                        self.interface.public_key = Some(public_key);
+                        self.interface.private_key = value;
 
-                    debug!("public key: {:?}", self.interface.public_key);
+                        debug!("public key: {:?}", self.interface.public_key);
+                    }
+                    InterfaceSetKind::Dns => self.interface.dns = value,
+                    InterfaceSetKind::Table => self.interface.table = value,
+                    InterfaceSetKind::Mtu => self.interface.mtu = value,
+                    InterfaceSetKind::BindingIfaces => {
+                        self.interface.binding_iface = value;
+                        sender.input(Self::Input::SetRoutingScript(
+                            self.interface
+                                .routing_script_name
+                                .as_ref()
+                                .and_then(|name| {
+                                    self.routing_scripts
+                                        .borrow()
+                                        .iter()
+                                        .find(|s| &s.name == name)
+                                        .cloned()
+                                }),
+                        ));
+                    }
                 }
-                InterfaceSetKind::Dns => self.interface.dns = value,
-                InterfaceSetKind::Table => self.interface.table = value,
-                InterfaceSetKind::Mtu => self.interface.mtu = value,
-                InterfaceSetKind::BindingIfaces => {
-                    //TODO: enforce user for saving or save automatically
-                    // TODO: change binding interface in current script
-                    self.interface.binding_iface = value;
-                    sender.input(Self::Input::SetRoutingScript(
-                        self.interface
-                            .routing_script_name
-                            .as_ref()
-                            .and_then(|name| {
-                                self.routing_scripts
-                                    .borrow()
-                                    .iter()
-                                    .find(|s| &s.name == name)
-                                    .cloned()
-                            }),
-                    ));
-                }
-            },
+                // notify parent that the overview has unsaved changes
+                sender.output_sender().emit(Self::Output::FieldsModified);
+            }
         }
     }
 }
