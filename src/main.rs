@@ -2,6 +2,7 @@
     Copyright 2025 TII (SSRC) and the contributors
     SPDX-License-Identifier: Apache-2.0
 */
+use crate::gtk::gdk_pixbuf;
 use gtk::prelude::*;
 use log::{debug, error, info};
 use nix::unistd::chown;
@@ -14,7 +15,11 @@ use relm4_components::save_dialog::*;
 use std::os::unix::fs::MetadataExt;
 use std::{fs, path::PathBuf};
 use syslog::{BasicLogger, Facility, Formatter3164};
+use tokio::process::Command;
 use wireguard_gui::{cli::*, config::*, generator::*, overview::*, tunnel::*, utils::*};
+
+const GHAF_LOGO: &[u8] = include_bytes!("../assets/ghaf-logo.png");
+const WG_LOGO: &[u8] = include_bytes!("../assets/wireguard-logo.png");
 struct App {
     tunnels: FactoryVecDeque<Tunnel>,
     selected_tunnel_idx: Option<usize>,
@@ -25,6 +30,7 @@ struct App {
     export_dialog: Controller<SaveDialog>,
     init_err_buffer: Vec<String>,
     init_complete: bool,
+    save_button_enabled: bool,
 }
 
 #[derive(Debug)]
@@ -46,6 +52,7 @@ enum AppMsg {
     OverviewInitScripts(Vec<RoutingScripts>),
     OverviewInitIfaceBindings(Vec<String>),
     TunnelModified,
+    OpenUrl(String),
     Ignore,
 }
 
@@ -57,7 +64,7 @@ impl SimpleComponent for App {
 
     view! {
         gtk::Window {
-            set_title: Some("Wireguard"),
+            set_title: Some("Wireguard GUI"),
             set_default_size: (480, 340),
 
             gtk::Paned {
@@ -67,6 +74,48 @@ impl SimpleComponent for App {
                 #[wrap(Some)]
                 set_start_child = &gtk::Box {
                     set_orientation: gtk::Orientation::Vertical,
+                    set_hexpand: true,
+                    set_vexpand: true,
+                    set_spacing: 10,
+                    set_margin_start: 0,
+                    set_margin_end: 0,
+                    set_margin_top: 0,
+                    set_margin_bottom: 0,
+
+                    // Horizontal box to hold the two logos side by side
+                    gtk::Box {
+                        set_orientation: gtk::Orientation::Horizontal,
+                        set_hexpand: false,
+                        set_vexpand: false,
+                        set_spacing: 5,
+                        set_margin_start: 0,
+                        set_margin_end: 0,
+                        set_margin_top: 0,
+                        set_margin_bottom: 0,
+
+
+                    // Logo 1
+                    gtk::Image {
+                       set_from_pixbuf: ghaf_pixbuf.as_ref(),
+                       set_halign: gtk::Align::Fill,
+                       set_valign: gtk::Align::Fill,
+                       set_pixel_size: 100,
+                       set_hexpand: true,
+                       set_vexpand: true,
+                    },
+
+                    // Logo 2
+                    gtk::Image {
+                        set_from_pixbuf: wg_pixbuf.as_ref(),
+                        set_halign: gtk::Align::Fill,
+                        set_valign: gtk::Align::Fill,
+                        set_pixel_size: 150,
+                        set_hexpand: true,
+                        set_vexpand: true,
+                     },
+
+                    },
+
                     gtk::ScrolledWindow {
                         set_vexpand: true,
                         set_hexpand: true,
@@ -77,16 +126,18 @@ impl SimpleComponent for App {
                     },
 
                     gtk::Box {
-                        // gtk::Button {
-                        //     set_label: "Add Tunnel",
-                        //     connect_clicked => Self::Input::AddTunnel(Box::default()),
-                        // },
 
                         append: model.import_button.widget(),
 
                         gtk::Button {
                             set_label: "Generate Configs",
                             connect_clicked => Self::Input::ShowGenerator,
+                        },
+                        gtk::Button {
+                            set_label: "Documentation",
+                            connect_clicked =>
+                            Self::Input::OpenUrl("https://ghaf.tii.ae/ghaf/dev/ref/wireguard-gui/".into()),
+
                         }
                     },
                 },
@@ -109,6 +160,8 @@ impl SimpleComponent for App {
                         set_end_widget = &gtk::Box {
                             gtk::Button {
                                 set_label: "Save",
+                                #[watch]
+                                set_sensitive: model.save_button_enabled,
                                 connect_clicked => Self::Input::SaveConfigInitiate,
                             },
 
@@ -133,6 +186,8 @@ impl SimpleComponent for App {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        let ghaf_pixbuf = pixbuf_from_bytes(GHAF_LOGO);
+        let wg_pixbuf = pixbuf_from_bytes(WG_LOGO);
         let (scripts, err) = extract_scripts_metadata();
 
         if let Some(err_msg) = err {
@@ -279,6 +334,7 @@ impl SimpleComponent for App {
             export_dialog,
             init_err_buffer: Vec::new(),
             init_complete: false,
+            save_button_enabled: false,
         };
 
         let tunnels_list_box = model.tunnels.widget();
@@ -419,7 +475,7 @@ impl SimpleComponent for App {
                 if let Some(idx) = self.selected_tunnel_idx {
                     if let Some(selected_tunnel) = self.tunnels.guard().get_mut(idx) {
                         selected_tunnel.mark_dirty();
-                        // TODO: update UI (like enabling "Save" button) by storing dirty state somewhere
+                        self.save_button_enabled = true;
                     }
                 }
             }
@@ -494,6 +550,7 @@ impl SimpleComponent for App {
                     if is_path_none {
                         selected_tunnel.update_from(new_tunnel);
                     }
+                    self.save_button_enabled = false;
                 }
             }
             Self::Input::AddPeer => {
@@ -554,6 +611,21 @@ impl SimpleComponent for App {
                     sender.input(Self::Input::Error(combined));
                 }
             }
+            AppMsg::OpenUrl(url) => {
+                // spawn a Tokio task
+                sender.oneshot_command(async move {
+                    // spawn_blocking because Command is blocking
+                    let result = tokio::task::spawn_blocking(move || {
+                        Command::new("xdg-open").arg(&url).status()
+                    })
+                    .await;
+
+                    // send message back to Relm4
+                    if let Err(e) = result {
+                        error!("Error opening URL: {}", e);
+                    }
+                });
+            }
             Self::Input::Ignore => (),
         }
     }
@@ -561,7 +633,6 @@ impl SimpleComponent for App {
 
 fn main() {
     initialize_logger(get_log_output(), get_log_level_output());
-
     karen::builder()
         .wrapper("pkexec")
         .with_env(&[
@@ -615,4 +686,26 @@ fn initialize_logger(log_output: LogOutput, log_level: log::Level) {
     }
 
     debug!("Logger initialized");
+}
+
+fn pixbuf_from_bytes(bytes: &[u8]) -> Option<gdk_pixbuf::Pixbuf> {
+    let loader = gdk_pixbuf::PixbufLoader::new();
+    match loader.write(bytes) {
+        Ok(_) => (),
+        Err(err) => {
+            error!("PixbufLoader.write error: {:?}", err);
+            return None;
+        }
+    }
+    if let Err(err) = loader.close() {
+        error!("PixbufLoader.close error: {:?}", err);
+        return None;
+    }
+    match loader.pixbuf() {
+        Some(pb) => Some(pb),
+        None => {
+            error!("PixbufLoader returned no pixbuf (probably unsupported format)");
+            None
+        }
+    }
 }

@@ -87,6 +87,7 @@
               ./Cargo.toml
               ./Cargo.lock
               ./src
+              ./assets
               crate
             ];
           };
@@ -155,7 +156,7 @@
               '';
               postFixup = ''
                 wrapProgram $out/bin/wireguard-gui \
-                  --prefix PATH : ${lib.makeBinPath [ pkgs.wireguard-tools ]} \
+                  --prefix PATH : ${lib.makeBinPath [ pkgs.wireguard-tools pkgs.xdg-utils ]} \
                   --set LIBGL_ALWAYS_SOFTWARE true \
                   --set G_MESSAGES_DEBUG all
               '';
