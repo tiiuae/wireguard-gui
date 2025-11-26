@@ -125,16 +125,8 @@ pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
                 if is_in_interface {
                     match key.as_str() {
                         "# Name" => cfg.interface.name = Some(value),
-                        "# BindIface" => {
-                            cfg.interface.binding_iface = Some(value)
-                            // TODO: binding iface bilgisayarda var mı kontrol et varsa atama yap.
-                            // TODO: aynısını binding scripts için de yap
-                        }
-                        "# RoutingScriptName" => {
-                            cfg.interface.routing_script_name = Some(value)
-                            // TODO: binding iface bilgisayarda var mı kontrol et varsa atama yap.
-                            // TODO: aynısını binding scripts için de yap
-                        }
+                        "# BindIface" => cfg.interface.binding_iface = Some(value),
+                        "# RoutingScriptName" => cfg.interface.routing_script_name = Some(value),
                         "Address" => {
                             if !utils::is_ip_valid(Some(&value)) {
                                 return Err(format!("Invalid IP address {value}."));
@@ -563,16 +555,20 @@ pub fn validate_assign_routing_script(
 
         if let Some(script) = matched_script {
             macro_rules! compare_field {
-                ($field:ident) => {
+                ($field:ident, $use_bind_subst:expr) => {
                     match (&cfg.interface.$field, &script.$field) {
                         (Some(cfg_val), Some(template)) => {
-                            let cfg_norm = if let Some(bind_iface) = &cfg.interface.binding_iface {
-                                cfg_val.replace(bind_iface, "%bindIface")
+                            let cfg_norm = if $use_bind_subst {
+                                cfg.interface
+                                    .binding_iface
+                                    .as_ref()
+                                    .map(|iface| cfg_val.replace(iface, "%bindIface"))
+                                    .unwrap_or_else(|| cfg_val.clone())
                             } else {
                                 cfg_val.clone()
                             };
 
-                            if &cfg_norm != template {
+                            if cfg_norm != *template {
                                 return Err(anyhow::anyhow!(
                                     "{} script does not match the expected template.",
                                     stringify!($field)
@@ -584,17 +580,17 @@ pub fn validate_assign_routing_script(
                             return Err(anyhow::anyhow!(
                                 "{} scripts are not identical",
                                 stringify!($field)
-                            ))
+                            ));
                         }
                     }
                 };
             }
 
-            compare_field!(pre_up);
-            compare_field!(post_up);
-            compare_field!(pre_down);
-            compare_field!(post_down);
-            //TODO: fwmark varsa karşılaştır
+            compare_field!(pre_up, true);
+            compare_field!(post_up, true);
+            compare_field!(pre_down, true);
+            compare_field!(post_down, true);
+            compare_field!(fwmark, false);
 
             cfg.interface.has_script_bind_iface = script.has_bind_interface;
         } else {
