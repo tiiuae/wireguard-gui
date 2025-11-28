@@ -5,8 +5,8 @@
 use std::collections::HashMap;
 
 use relm4::factory::{FactoryComponent, FactoryHashMap, FactorySender};
-use relm4::{gtk::prelude::*, prelude::*};
 use relm4::{ComponentParts, ComponentSender, RelmWidgetExt, SimpleComponent};
+use relm4::{gtk::prelude::*, prelude::*};
 
 #[derive(Debug)]
 pub struct FieldSettings {

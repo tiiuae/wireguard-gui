@@ -3,7 +3,7 @@ use crate::cli;
     Copyright 2025 TII (SSRC) and the contributors
     SPDX-License-Identifier: Apache-2.0
 */
-use crate::config::{parse_config, WireguardConfig};
+use crate::config::{WireguardConfig, parse_config};
 use log::*;
 use std::fs;
 use std::io::{self, Read, Result, Write};
@@ -34,11 +34,11 @@ pub fn load_existing_configurations() -> Result<(Vec<WireguardConfig>, Option<St
                 errs.push(msg);
                 continue;
             };
-            if cfg.interface.name.is_none() {
-                if let Some(file_name) = file_path.file_stem().and_then(|n| n.to_str()) {
+            if cfg.interface.name.is_none() 
+                && let Some(file_name) = file_path.file_stem().and_then(|n| n.to_str()) {
                     cfg.interface.name = Some(file_name.to_string());
                 }
-            }
+            
 
             cfgs.push(cfg);
         }
@@ -125,7 +125,7 @@ pub fn wait_cmd_with_timeout(
 
     let combined_output = format!("{}\n{}", stdout_buf, stderr_buf);
 
-    if let (Some(cmd_str), Some(status)) = (cmd_str, status_code) {
+    if let Some((cmd_str, status)) = cmd_str.zip(status_code) {
         if status != 0 {
             error!(
                 "Cmd: {} failed with status code {}. Output:\n{}",

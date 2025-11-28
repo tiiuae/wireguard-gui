@@ -4,7 +4,7 @@
 */
 use crate::{
     cli,
-    config::{write_configs_to_path, WireguardConfig},
+    config::{WireguardConfig, write_configs_to_path},
     fields::*,
     generation_settings::*,
 };
