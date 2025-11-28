@@ -232,15 +232,14 @@ impl SimpleComponent for OverviewModel {
                                         .find(|&i| {
                                             model.binding_ifaces_list
                                                 .string(i)
-                                                .map(|s| s.as_str() == iface.as_str())
-                                                .unwrap_or(false)
+                                                .is_some_and(|s| &s == iface)
                                         })
                                 })
                                 .unwrap_or(gtk::INVALID_LIST_POSITION) // Default to "None" at index 0
                         },
                         connect_selected_notify[sender] => move |dropdown| {
-                            if let Some(list) = dropdown.model().and_then(|m| m.downcast::<gtk::StringList>().ok()) {
-                                if let Some(item) = list.string(dropdown.selected()) {
+                            if let Some(list) = dropdown.model().and_downcast::<gtk::StringList>() 
+                                && let Some(item) = list.string(dropdown.selected()) {
                                     let iface_name = if item == "None" {
                                         None
                                     } else {
@@ -253,7 +252,7 @@ impl SimpleComponent for OverviewModel {
                                        iface_name
                                     ));
                                 }
-                            }
+                            
                         },
                     },
 
@@ -278,29 +277,27 @@ impl SimpleComponent for OverviewModel {
                             }
                         },
                         connect_selected_notify[sender, scripts = Rc::clone(&model.routing_scripts)] => move |dropdown| {
-                            if let Some(list) = dropdown.model().and_then(|m| m.downcast::<gtk::StringList>().ok()) {
-                                if let Some(item) = list.string(dropdown.selected()) {
+                            if let Some(list) = dropdown.model().and_downcast::<gtk::StringList>() 
+                                && let Some(item) = list.string(dropdown.selected()) {
                                     const MAX_CONTENT_CHARS: usize = 400;
                                     let name = item.to_string();
-                                    // Borrow once for the search
-                                    let scripts_ref = scripts.borrow();
                                     let selected_script = if name == "None" {
                                         None
                                     } else {
-                                        scripts_ref.iter().find(|s| s.name == name).cloned()
+                                        scripts.borrow().iter().find(|s| s.name == name).cloned()
                                     };
 
                                     let tooltip_text = selected_script
-                                        .as_ref()
-                                        .map(|s| s.content.chars().take(MAX_CONTENT_CHARS).collect::<String>())
-                                        .unwrap_or_else(|| "No script selected".to_string());
-                                    dropdown.set_tooltip_text(Some(&tooltip_text));
+                                    .as_ref()
+                                    .map_or("No script selected", |s| &s.content[0..MAX_CONTENT_CHARS.min(s.content.len())]);
+
+                                    dropdown.set_tooltip_text(Some(tooltip_text));
 
                                     sender.input(OverviewInput::SetRoutingScript(selected_script));
 
 
                                 }
-                            }
+                            
                         },
                     },
                 }
@@ -375,37 +372,41 @@ impl SimpleComponent for OverviewModel {
             }
             Self::Input::SetRoutingScript(selected_script) => {
                 if let Some(script) = selected_script {
-                    self.interface.has_script_bind_iface = script.has_bind_interface;
+                    let script_routing_hooks = script.routing_hooks;
+                    self.interface.has_script_bind_iface = script_routing_hooks.has_bind_interface;
                     // Disable/Enable dropdown when script requires bind interface
-                    self.binding_ifaces_enabled = script.has_bind_interface;
+                    self.binding_ifaces_enabled = script_routing_hooks.has_bind_interface;
                     self.interface.routing_script_name = Some(script.name);
-                    self.interface.fwmark = script.fwmark;
+                    self.interface.fwmark = script_routing_hooks.fwmark;
 
                     if self.binding_ifaces_enabled {
                         // Ensure binding_iface exists
-                        let bind_iface = match &self.interface.binding_iface {
-                            Some(iface) if !iface.is_empty() => iface,
-                            _ => {
-                                sender.output_sender().emit(OverviewOutput::Error(
-                                    "No binding interface selected".to_string(),
-                                ));
-                                return;
-                            }
+                        let Some(bind_iface) = self
+                            .interface
+                            .binding_iface
+                            .as_ref()
+                            .filter(|iface| !iface.is_empty())
+                        else {
+                            sender.output_sender().emit(OverviewOutput::Error(
+                                "No binding interface selected".to_string(),
+                            ));
+                            return;
                         };
-                        // Helper to replace %bindIface in Option<String> ya da daha önceden atama yapıldıysa onu ata
-                        let replace_bindiface = |field: &Option<String>| -> Option<String> {
+                        // Helper to replace %bindIface in Option<String>
+                        let replace_bindiface = |field: &Option<String>| {
                             field.as_ref().map(|s| s.replace("%bindIface", bind_iface))
                         };
                         // Assign all script fields with %bindIface replaced
-                        self.interface.pre_up = replace_bindiface(&script.pre_up);
-                        self.interface.pre_down = replace_bindiface(&script.pre_down);
-                        self.interface.post_up = replace_bindiface(&script.post_up);
-                        self.interface.post_down = replace_bindiface(&script.post_down);
+                        self.interface.pre_up = replace_bindiface(&script_routing_hooks.pre_up);
+                        self.interface.pre_down = replace_bindiface(&script_routing_hooks.pre_down);
+                        self.interface.post_up = replace_bindiface(&script_routing_hooks.post_up);
+                        self.interface.post_down =
+                            replace_bindiface(&script_routing_hooks.post_down);
                     } else {
-                        self.interface.pre_up = script.pre_up;
-                        self.interface.pre_down = script.pre_down;
-                        self.interface.post_up = script.post_up;
-                        self.interface.post_down = script.post_down;
+                        self.interface.pre_up = script_routing_hooks.pre_up;
+                        self.interface.pre_down = script_routing_hooks.pre_down;
+                        self.interface.post_up = script_routing_hooks.post_up;
+                        self.interface.post_down = script_routing_hooks.post_down;
                     }
                 } else {
                     self.interface.pre_up = None;
@@ -437,8 +438,7 @@ impl SimpleComponent for OverviewModel {
                 self.routing_scripts_list.splice(0, 0, &new_items);
 
                 // Update Rc contents
-                self.routing_scripts.borrow_mut().clear();
-                self.routing_scripts.borrow_mut().extend(s);
+                self.routing_scripts.replace(s);
             }
             Self::Input::SetInterface(kind, value) => {
                 match kind {

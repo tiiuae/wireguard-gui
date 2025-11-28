@@ -3,6 +3,7 @@
     SPDX-License-Identifier: Apache-2.0
 */
 use crate::gtk::gdk_pixbuf;
+use anyhow::Context;
 use gtk::prelude::*;
 use log::{debug, error, info};
 use nix::unistd::chown;
@@ -15,9 +16,7 @@ use relm4_components::save_dialog::*;
 use std::os::unix::fs::MetadataExt;
 use std::{fs, path::PathBuf};
 use syslog::{BasicLogger, Facility, Formatter3164};
-use tokio::process::Command;
 use wireguard_gui::{cli::*, config::*, generator::*, overview::*, tunnel::*, utils::*};
-
 const GHAF_LOGO: &[u8] = include_bytes!("../assets/ghaf-logo.png");
 const WG_LOGO: &[u8] = include_bytes!("../assets/wireguard-logo.png");
 struct App {
@@ -96,7 +95,7 @@ impl SimpleComponent for App {
 
                     // Logo 1
                     gtk::Image {
-                       set_from_pixbuf: ghaf_pixbuf.as_ref(),
+                       set_from_pixbuf: ghaf_pixbuf.ok().as_ref(),
                        set_halign: gtk::Align::Fill,
                        set_valign: gtk::Align::Fill,
                        set_pixel_size: 100,
@@ -106,7 +105,7 @@ impl SimpleComponent for App {
 
                     // Logo 2
                     gtk::Image {
-                        set_from_pixbuf: wg_pixbuf.as_ref(),
+                        set_from_pixbuf: wg_pixbuf.ok().as_ref(),
                         set_halign: gtk::Align::Fill,
                         set_valign: gtk::Align::Fill,
                         set_pixel_size: 150,
@@ -472,12 +471,12 @@ impl SimpleComponent for App {
                     return;
                 }
 
-                if let Some(idx) = self.selected_tunnel_idx {
-                    if let Some(selected_tunnel) = self.tunnels.guard().get_mut(idx) {
+                if let Some(idx) = self.selected_tunnel_idx 
+                    && let Some(selected_tunnel) = self.tunnels.guard().get_mut(idx) {
                         selected_tunnel.mark_dirty();
                         self.save_button_enabled = true;
                     }
-                }
+                
             }
             Self::Input::SaveConfigInitiate => {
                 self.overview.emit(OverviewInput::CollectTunnel(None));
@@ -498,6 +497,7 @@ impl SimpleComponent for App {
                         ));
                         return;
                     }
+                    // TODO: Tunnel::new() has std::process function
                     let new_tunnel = Tunnel::new(*config, false);
                     let path = match path {
                         Some(p) if validate_export_path(&p) => p,
@@ -613,16 +613,16 @@ impl SimpleComponent for App {
             }
             AppMsg::OpenUrl(url) => {
                 // spawn a Tokio task
+                let sender_clone = sender.clone();
                 sender.oneshot_command(async move {
-                    // spawn_blocking because Command is blocking
-                    let result = tokio::task::spawn_blocking(move || {
-                        Command::new("xdg-open").arg(&url).status()
-                    })
-                    .await;
-
-                    // send message back to Relm4
-                    if let Err(e) = result {
-                        error!("Error opening URL: {}", e);
+                    if let Err(e) = tokio::process::Command::new("xdg-open")
+                        .arg(&url)
+                        .status()
+                        .await
+                    {
+                        let msg = format!("Failed to open URL '{}': {}", url, e);
+                        error!("{}", msg);
+                        sender_clone.input(AppMsg::Error(msg));
                     }
                 });
             }
@@ -688,24 +688,11 @@ fn initialize_logger(log_output: LogOutput, log_level: log::Level) {
     debug!("Logger initialized");
 }
 
-fn pixbuf_from_bytes(bytes: &[u8]) -> Option<gdk_pixbuf::Pixbuf> {
+fn pixbuf_from_bytes(bytes: &[u8]) -> anyhow::Result<gdk_pixbuf::Pixbuf> {
     let loader = gdk_pixbuf::PixbufLoader::new();
-    match loader.write(bytes) {
-        Ok(_) => (),
-        Err(err) => {
-            error!("PixbufLoader.write error: {:?}", err);
-            return None;
-        }
-    }
-    if let Err(err) = loader.close() {
-        error!("PixbufLoader.close error: {:?}", err);
-        return None;
-    }
-    match loader.pixbuf() {
-        Some(pb) => Some(pb),
-        None => {
-            error!("PixbufLoader returned no pixbuf (probably unsupported format)");
-            None
-        }
-    }
+    loader.write(bytes).context("PixbufLoader.write error")?;
+    loader.close().context("PixbufLoader.close error")?;
+    loader
+        .pixbuf()
+        .context("PixbufLoader returned no pixbuf...")
 }

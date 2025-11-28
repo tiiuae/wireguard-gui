@@ -4,14 +4,40 @@
 */
 use crate::{cli, utils};
 use anyhow::Result;
+use anyhow::anyhow;
 use log::{debug, error, info, warn};
-use nix::unistd::{chown, Gid, Group, Uid, User};
+use nix::unistd::{Gid, Group, Uid, User, chown};
 use pnet_datalink::interfaces;
 use std::fs;
 use std::io;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RoutingKeyword {
+    PreUp,
+    PostUp,
+    PreDown,
+    PostDown,
+    FwMark,
+}
+
+impl FromStr for RoutingKeyword {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "PreUp" => Ok(RoutingKeyword::PreUp),
+            "PostUp" => Ok(RoutingKeyword::PostUp),
+            "PreDown" => Ok(RoutingKeyword::PreDown),
+            "PostDown" => Ok(RoutingKeyword::PostDown),
+            "FwMark" => Ok(RoutingKeyword::FwMark),
+            _ => Err(()),
+        }
+    }
+}
 
 /// Defines the VPN settings for the local node.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Default, Debug)]
@@ -54,26 +80,21 @@ pub struct WireguardConfig {
     pub interface: Interface,
     pub peers: Vec<Peer>,
 }
-
-type RoutingHooks = (
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    bool,
-);
 #[derive(Clone, Default, Debug)]
-pub struct RoutingScripts {
-    pub path: PathBuf,
-    pub name: String,
-    pub content: String, // new field for truncated content
+pub struct RoutingHooks {
     pub pre_up: Option<String>,
     pub post_up: Option<String>,
     pub pre_down: Option<String>,
     pub post_down: Option<String>,
     pub fwmark: Option<String>,
     pub has_bind_interface: bool,
+}
+#[derive(Clone, Default, Debug)]
+pub struct RoutingScripts {
+    pub path: PathBuf,
+    pub name: String,
+    pub content: String, // new field for truncated content
+    pub routing_hooks: RoutingHooks,
 }
 
 pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
@@ -137,6 +158,7 @@ pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
                         "ListenPort" => cfg.interface.listen_port = Some(value),
                         "PrivateKey" => {
                             cfg.interface.public_key =
+                            // TODO: move it to where parse_config() is called. Because it has blocking I/O operation
                                 match utils::generate_public_key(value.clone()) {
                                     Ok(key) => Some(key),
                                     Err(e) => {
@@ -187,61 +209,59 @@ pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
 
 pub fn write_config(c: &WireguardConfig) -> String {
     let mut res = String::from("[Interface]\n");
+    let iface = &c.interface;
+
     // Conditional BindIface only when has_script_bind_iface == true
-    let binding_iface_entry = if c.interface.has_script_bind_iface {
-        c.interface
-            .binding_iface
-            .clone()
-            .map(|v| ("# BindIface", v))
-    } else {
-        None
-    };
+    let binding_iface_entry = iface
+        .binding_iface
+        .as_deref()
+        .filter(|_| iface.has_script_bind_iface)
+        .map(|v| ("# BindIface", v));
 
-    let kvs = [
-        c.interface.name.clone().map(|v| ("# Name", v)),
+    let iface_kvs = [
+        iface.name.as_deref().map(|v| ("# Name", v)),
         binding_iface_entry,
-        c.interface
+        iface
             .routing_script_name
-            .clone()
+            .as_deref()
             .map(|v| ("# RoutingScriptName", v)),
-        c.interface.address.clone().map(|v| ("Address", v)),
-        c.interface.listen_port.clone().map(|v| ("ListenPort", v)),
-        c.interface.private_key.clone().map(|v| ("PrivateKey", v)),
-        c.interface.dns.clone().map(|v| ("DNS", v)),
-        c.interface.table.clone().map(|v| ("Table", v)),
-        c.interface.mtu.clone().map(|v| ("MTU", v)),
-        c.interface.pre_up.clone().map(|v| ("PreUp", v)),
-        c.interface.post_up.clone().map(|v| ("PostUp", v)),
-        c.interface.pre_down.clone().map(|v| ("PreDown", v)),
-        c.interface.post_down.clone().map(|v| ("PostDown", v)),
-        c.interface.fwmark.clone().map(|v| ("FwMark", v)),
+        iface.address.as_deref().map(|v| ("Address", v)),
+        iface.listen_port.as_deref().map(|v| ("ListenPort", v)),
+        iface.private_key.as_deref().map(|v| ("PrivateKey", v)),
+        iface.dns.as_deref().map(|v| ("DNS", v)),
+        iface.table.as_deref().map(|v| ("Table", v)),
+        iface.mtu.as_deref().map(|v| ("MTU", v)),
+        iface.pre_up.as_deref().map(|v| ("PreUp", v)),
+        iface.post_up.as_deref().map(|v| ("PostUp", v)),
+        iface.pre_down.as_deref().map(|v| ("PreDown", v)),
+        iface.post_down.as_deref().map(|v| ("PostDown", v)),
+        iface.fwmark.as_deref().map(|v| ("FwMark", v)),
     ];
-
-    for (key, value) in kvs.into_iter().flatten() {
+    for (key, value) in iface_kvs.into_iter().flatten() {
         res.push_str(key);
         res.push_str(" = ");
-        res.push_str(value.as_str());
+        res.push_str(value);
         res.push('\n');
     }
     res.push('\n');
 
-    for peer in c.peers.iter() {
+    for peer in &c.peers {
         res.push_str("[Peer]\n");
 
-        let kvs = [
-            peer.name.clone().map(|v| ("# Name", v)),
-            peer.allowed_ips.clone().map(|v| ("AllowedIPs", v)),
-            peer.endpoint.clone().map(|v| ("Endpoint", v)),
-            peer.public_key.clone().map(|v| ("PublicKey", v)),
+        let peer_kvs = [
+            peer.name.as_deref().map(|v| ("# Name", v)),
+            peer.allowed_ips.as_deref().map(|v| ("AllowedIPs", v)),
+            peer.endpoint.as_deref().map(|v| ("Endpoint", v)),
+            peer.public_key.as_deref().map(|v| ("PublicKey", v)),
             peer.persistent_keepalive
-                .clone()
+                .as_deref()
                 .map(|v| ("PersistentKeepalive", v)),
         ];
 
-        for (key, value) in kvs.into_iter().flatten() {
+        for (key, value) in peer_kvs.into_iter().flatten() {
             res.push_str(key);
             res.push_str(" = ");
-            res.push_str(value.as_str());
+            res.push_str(value);
             res.push('\n');
         }
         res.push('\n');
@@ -268,12 +288,13 @@ fn get_uid_gid(user: &str, group: &str) -> io::Result<(Uid, Gid)> {
 
 pub fn write_configs_to_path(cfgs: &[&WireguardConfig], path: &Path) -> io::Result<()> {
     // Make sure the parent directory exists
-    if let Some(parent) = path.parent() {
-        if !parent.exists() {
-            debug!("Parent directory not found. Creating: {}", parent.display());
-            fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.exists()
+    {
+        debug!("Parent directory not found. Creating: {}", parent.display());
+        fs::create_dir_all(parent)?;
     }
+
     let mut file = fs::File::create(path)?;
     let mut perms = file.metadata()?.permissions();
     perms.set_mode(0o600);
@@ -284,7 +305,7 @@ pub fn write_configs_to_path(cfgs: &[&WireguardConfig], path: &Path) -> io::Resu
         let content = crate::config::write_config(cfg);
 
         // Print content for debugging
-        info!("Writing to file: {:?}", file);
+        info!("Writing to file: {}", path.display());
         debug!("Content:\n{}", content);
 
         // Write the content to the file
@@ -354,8 +375,6 @@ pub fn extract_scripts_metadata() -> (Vec<RoutingScripts>, Option<String>) {
     const MAX_CONTENT_CHARS: usize = 4096;
     let mut errors = Vec::new();
     let mut scripts = Vec::new();
-    let mut seen = std::collections::HashMap::<String, std::path::PathBuf>::new();
-    let mut duplicates = std::collections::HashSet::new();
 
     for path in get_script_paths() {
         let name = path
@@ -364,46 +383,28 @@ pub fn extract_scripts_metadata() -> (Vec<RoutingScripts>, Option<String>) {
             .unwrap_or("unknown")
             .to_string();
 
-        // Detect duplicate names
-        if let Some(prev) = seen.insert(name.clone(), path.clone()) {
-            let msg = format!(
-                "Duplicate script name detected: \"{}\" (files: {:?} and {:?})",
-                name, prev, path
-            );
-            error!("{}", msg);
-            errors.push(msg);
-            duplicates.insert(name);
-            continue;
-        }
-
         // Skip oversized scripts
-        if let Ok(meta) = fs::metadata(&path) {
-            if meta.len() as usize > MAX_CONTENT_CHARS {
+        if let Ok(meta) = fs::metadata(&path) 
+            && meta.len() as usize > MAX_CONTENT_CHARS {
                 let msg = format!("Script {} is too large, skipping", name);
                 error!("{}", msg);
                 errors.push(msg);
                 continue;
             }
-        }
+        
 
         // Read and parse script content
         match fs::read_to_string(&path) {
             Ok(content) => match parse_routing_keywords(&content, &name) {
-                Ok((pre_up, post_up, pre_down, post_down, fwmark, has_bind_interface)) => scripts
-                    .push(RoutingScripts {
-                        path,
-                        name,
-                        content,
-                        pre_up,
-                        post_up,
-                        pre_down,
-                        post_down,
-                        fwmark,
-                        has_bind_interface,
-                    }),
+                Ok(routing_hooks) => scripts.push(RoutingScripts {
+                    path,
+                    name,
+                    content,
+                    routing_hooks,
+                }),
                 Err(e) => {
-                    errors.push(e.clone());
                     error!("{}", e);
+                    errors.push(e.to_string());
                 }
             },
             Err(e) => {
@@ -413,9 +414,6 @@ pub fn extract_scripts_metadata() -> (Vec<RoutingScripts>, Option<String>) {
             }
         }
     }
-
-    // Remove scripts whose name appeared more than once
-    scripts.retain(|s| !duplicates.contains(&s.name));
 
     let combined_errors = if errors.is_empty() {
         None
@@ -430,13 +428,13 @@ pub fn extract_scripts_metadata() -> (Vec<RoutingScripts>, Option<String>) {
 /// Returns `Ok(())` if valid, otherwise `Err(String)` describing the issue.
 /// Validate that the script contains at least one of the required keywords.
 /// Parse the script content and extract routing keywords
-fn parse_routing_keywords(content: &str, script_name: &str) -> Result<RoutingHooks, String> {
+fn parse_routing_keywords(content: &str, script_name: &str) -> Result<RoutingHooks> {
     let mut pre_up: Option<String> = None;
     let mut post_up: Option<String> = None;
     let mut pre_down: Option<String> = None;
     let mut post_down: Option<String> = None;
     let mut fwmark: Option<String> = None;
-    let mut has_bind_iface = false;
+    let mut has_bind_interface = false;
 
     for raw_line in content.lines() {
         let line = raw_line.trim();
@@ -444,30 +442,25 @@ fn parse_routing_keywords(content: &str, script_name: &str) -> Result<RoutingHoo
             continue;
         }
 
-        let keyword = if line.starts_with("PreUp") {
-            "PreUp"
-        } else if line.starts_with("PostUp") {
-            "PostUp"
-        } else if line.starts_with("PreDown") {
-            "PreDown"
-        } else if line.starts_with("PostDown") {
-            "PostDown"
-        } else if line.starts_with("FwMark") {
-            "FwMark"
-        } else {
-            continue;
-        };
-
-        let Some((_, cmds_raw)) = line.split_once('=') else {
-            return Err(format!(
+        // Split line into key/value
+        let (key, cmds_raw) = line.split_once('=').ok_or_else(|| {
+            anyhow!(
                 "Invalid syntax in script '{}': missing '=' in line '{}'",
-                script_name, line
-            ));
-        };
+                script_name,
+                line
+            )
+        })?;
+
+        // Convert string to enum
+        let keyword = key.trim().parse::<RoutingKeyword>().map_err(|_| {
+            anyhow!(
+                "Unknown routing keyword '{}' in script '{}'",
+                key.trim(),
+                script_name
+            )
+        })?;
 
         let cmds_raw = cmds_raw.trim();
-
-        // Split commands
         let parts: Vec<&str> = cmds_raw
             .split(';')
             .map(|c| c.trim())
@@ -475,50 +468,58 @@ fn parse_routing_keywords(content: &str, script_name: &str) -> Result<RoutingHoo
             .collect();
 
         if parts.is_empty() {
-            return Err(format!(
-                "Invalid empty command list for {} in script '{}'",
-                keyword, script_name
-            ));
+            anyhow::bail!(
+                "Empty command list for {:?} in script '{}'",
+                keyword,
+                script_name
+            );
         }
 
-        // Validate each command
-        if keyword != "FwMark" {
+        if keyword != RoutingKeyword::FwMark {
             for cmd in &parts {
                 if !(cmd.starts_with("iptables")
                     || cmd.starts_with("ip ")
                     || cmd.starts_with("ip6tables"))
                 {
-                    return Err(format!(
-                    "Invalid command '{}' for {} in script '{}'. Only iptables/ip/ip6tables allowed.",
-                    cmd, keyword, script_name
-                ));
+                    anyhow::bail!(
+                        "Invalid command '{}' for {:?} in script '{}'. Only iptables/ip/ip6tables allowed.",
+                        cmd,
+                        keyword,
+                        script_name
+                    );
                 }
-                // Check if any command includes %bindIface
                 if cmd.contains("%bindIface") {
-                    has_bind_iface = true;
+                    has_bind_interface = true;
                 }
             }
         }
-        // Join back
+
         let joined = parts.join("; ");
 
         match keyword {
-            "PreUp" => pre_up = Some(joined),
-            "PostUp" => post_up = Some(joined),
-            "PreDown" => pre_down = Some(joined),
-            "PostDown" => post_down = Some(joined),
-            "FwMark" => fwmark = Some(joined),
-            _ => {}
+            RoutingKeyword::PreUp => pre_up = Some(joined),
+            RoutingKeyword::PostUp => post_up = Some(joined),
+            RoutingKeyword::PreDown => pre_down = Some(joined),
+            RoutingKeyword::PostDown => post_down = Some(joined),
+            RoutingKeyword::FwMark => fwmark = Some(joined),
         }
     }
 
     if pre_up.is_none() && post_up.is_none() && pre_down.is_none() && post_down.is_none() {
-        return Err(format!(
+        anyhow::bail!(
             "Script '{}' does not contain any routing keywords (PreUp, PostUp, PreDown, PostDown)",
             script_name
-        ));
+        );
     }
-    Ok((pre_up, post_up, pre_down, post_down, fwmark, has_bind_iface))
+
+    Ok(RoutingHooks {
+        pre_up,
+        post_up,
+        pre_down,
+        post_down,
+        fwmark,
+        has_bind_interface,
+    })
 }
 
 pub fn get_binding_interfaces() -> Vec<String> {
@@ -531,12 +532,8 @@ pub fn get_binding_interfaces() -> Vec<String> {
                 return false;
             }
             let type_path = format!("/sys/class/net/{}/type", iface.name);
-            if let Ok(content) = fs::read_to_string(type_path) {
-                let if_type: u32 = content.trim().parse().unwrap_or(0);
-                if_type == TYPE_ETHERNET || if_type == TYPE_IEEE_802_11 // Ethernet or Wi-Fi
-            } else {
-                false
-            }
+            fs::read_to_string(type_path)
+            .is_ok_and(|content| matches!(content.trim().parse::<u32>(), Ok(v) if v == TYPE_ETHERNET || v == TYPE_IEEE_802_11))
         })
         .map(|iface| iface.name)
         .collect()
@@ -549,60 +546,79 @@ pub fn validate_assign_routing_script(
     scripts: &[RoutingScripts],
     cfg: &mut WireguardConfig,
 ) -> anyhow::Result<()> {
-    if let Some(script_name) = &cfg.interface.routing_script_name {
-        // Check if the script name exists in the provided list
-        let matched_script = scripts.iter().find(|s| s.name == *script_name);
+    let script_name = match &cfg.interface.routing_script_name {
+        Some(name) => name,
+        None => return Ok(()),
+    };
 
-        if let Some(script) = matched_script {
-            macro_rules! compare_field {
-                ($field:ident, $use_bind_subst:expr) => {
-                    match (&cfg.interface.$field, &script.$field) {
-                        (Some(cfg_val), Some(template)) => {
-                            let cfg_norm = if $use_bind_subst {
-                                cfg.interface
-                                    .binding_iface
-                                    .as_ref()
-                                    .map(|iface| cfg_val.replace(iface, "%bindIface"))
-                                    .unwrap_or_else(|| cfg_val.clone())
-                            } else {
-                                cfg_val.clone()
-                            };
+    let script = scripts
+        .iter()
+        .find(|s| &s.name == script_name)
+        .ok_or_else(|| {
+            anyhow!(
+                "'{script_name}' is not available or valid.\nPlease select again from the menu."
+            )
+        })?;
 
-                            if cfg_norm != *template {
-                                return Err(anyhow::anyhow!(
-                                    "{} script does not match the expected template.",
-                                    stringify!($field)
-                                ));
-                            }
-                        }
-                        (None, None) => {}
-                        _ => {
-                            return Err(anyhow::anyhow!(
-                                "{} scripts are not identical",
-                                stringify!($field)
-                            ));
-                        }
-                    }
+    let check_field = |cfg_val: &Option<String>,
+                       template_val: &Option<String>,
+                       use_bind: bool,
+                       name: &str|
+     -> anyhow::Result<()> {
+        match (cfg_val, template_val) {
+            (Some(cfg_val), Some(template)) => {
+                let normalized = if use_bind {
+                    cfg.interface
+                        .binding_iface
+                        .as_ref()
+                        .map(|iface| cfg_val.replace(iface, "%bindIface"))
+                        .unwrap_or_else(|| cfg_val.clone())
+                } else {
+                    cfg_val.clone()
                 };
+                if normalized != *template {
+                    anyhow::bail!("{name} script does not match the expected template.");
+                }
             }
-
-            compare_field!(pre_up, true);
-            compare_field!(post_up, true);
-            compare_field!(pre_down, true);
-            compare_field!(post_down, true);
-            compare_field!(fwmark, false);
-
-            cfg.interface.has_script_bind_iface = script.has_bind_interface;
-        } else {
-            // Script name not found in the list
-            let msg = format!(
-                "'{script_name}' is not available or valid.\n\
-                 Please select again from the menu."
-            );
-            error!("{}", msg);
-            return Err(anyhow::anyhow!(msg));
+            (None, None) => {}
+            _ => anyhow::bail!("{name} scripts are not identical"),
         }
-    }
+        Ok(())
+    };
+
+    check_field(
+        &cfg.interface.pre_up,
+        &script.routing_hooks.pre_up,
+        true,
+        "pre_up",
+    )?;
+    check_field(
+        &cfg.interface.post_up,
+        &script.routing_hooks.post_up,
+        true,
+        "post_up",
+    )?;
+    check_field(
+        &cfg.interface.pre_down,
+        &script.routing_hooks.pre_down,
+        true,
+        "pre_down",
+    )?;
+    check_field(
+        &cfg.interface.post_down,
+        &script.routing_hooks.post_down,
+        true,
+        "post_down",
+    )?;
+    check_field(
+        &cfg.interface.fwmark,
+        &script.routing_hooks.fwmark,
+        false,
+        "fwmark",
+    )?;
+
+    cfg.interface.has_script_bind_iface = script.routing_hooks.has_bind_interface;
+
     Ok(())
 }
 
@@ -610,24 +626,34 @@ pub fn validate_binding_iface(
     binding_ifaces: &[String],
     cfg: &WireguardConfig,
 ) -> anyhow::Result<()> {
-    if let Some(iface) = &cfg.interface.binding_iface {
-        if !binding_ifaces.contains(iface) {
-            return Err(anyhow::anyhow!("Invalid binding interface: {iface}"));
+    if let Some(iface) = &cfg.interface.binding_iface 
+        && !binding_ifaces.contains(iface) {
+            anyhow::bail!("Invalid binding interface: {iface}");
         }
-    }
+    
     Ok(())
 }
 
 pub fn reset_interface_hooks(cfg: &mut WireguardConfig) {
-    cfg.interface.binding_iface = None;
-    cfg.interface.routing_script_name = None;
-    cfg.interface.pre_up = None;
-    cfg.interface.pre_down = None;
-    cfg.interface.post_up = None;
-    cfg.interface.post_down = None;
-    cfg.interface.fwmark = None;
+    cfg.interface = Interface {
+        name: cfg.interface.name.take(),
+        address: cfg.interface.address.take(),
+        listen_port: cfg.interface.listen_port.take(),
+        private_key: cfg.interface.private_key.take(),
+        public_key: cfg.interface.public_key.take(),
+        dns: cfg.interface.dns.take(),
+        table: cfg.interface.table.take(),
+        mtu: cfg.interface.mtu.take(),
+        binding_iface: None,
+        routing_script_name: None,
+        pre_up: None,
+        pre_down: None,
+        post_up: None,
+        post_down: None,
+        fwmark: None,
+        has_script_bind_iface: false,
+    };
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -641,13 +667,15 @@ mod tests {
             PreUp = iptables -A INPUT -i %i -j ACCEPT
         "#;
 
-        let (pre_up, post_up, pre_down, post_down, fwmark, has_bind_interface) =
-            parse_routing_keywords(content, "test").expect("Should parse");
+        let routing_hooks = parse_routing_keywords(content, "test").expect("Should parse");
 
-        assert_eq!(pre_up.unwrap(), "iptables -A INPUT -i %i -j ACCEPT");
-        assert!(post_up.is_none());
-        assert!(pre_down.is_none());
-        assert!(post_down.is_none());
+        assert_eq!(
+            routing_hooks.pre_up.unwrap(),
+            "iptables -A INPUT -i %i -j ACCEPT"
+        );
+        assert!(routing_hooks.post_up.is_none());
+        assert!(routing_hooks.pre_down.is_none());
+        assert!(routing_hooks.post_down.is_none());
     }
 
     #[test]
@@ -661,23 +689,22 @@ mod tests {
             PostDown = ip rule delete ipproto tcp dport 22 table 1234
         "#;
 
-        let (pre_up, post_up, pre_down, post_down, fwmark, has_bind_interface) =
-            parse_routing_keywords(content, "test").expect("Should parse");
+        let routing_hooks = parse_routing_keywords(content, "test").expect("Should parse");
 
         assert_eq!(
-            pre_up.unwrap(),
+            routing_hooks.pre_up.unwrap(),
             "iptables -A INPUT -p tcp --dport 22 -j ACCEPT"
         );
         assert_eq!(
-            post_up.unwrap(),
+            routing_hooks.post_up.unwrap(),
             "ip rule add ipproto tcp dport 22 table 1234"
         );
         assert_eq!(
-            pre_down.unwrap(),
+            routing_hooks.pre_down.unwrap(),
             "iptables -D INPUT -p tcp --dport 22 -j ACCEPT"
         );
         assert_eq!(
-            post_down.unwrap(),
+            routing_hooks.post_down.unwrap(),
             "ip rule delete ipproto tcp dport 22 table 1234"
         );
     }
@@ -692,29 +719,53 @@ mod tests {
             # end
         "#;
 
-        let (pre_up, post_up, pre_down, post_down, fwmark, has_bind_interface) =
-            parse_routing_keywords(content, "test").expect("Should parse");
+        let routing_hooks = parse_routing_keywords(content, "test").expect("Should parse");
 
-        assert!(pre_up.is_none());
-        assert!(post_up.is_none());
-        assert!(pre_down.is_none());
-        assert_eq!(post_down.unwrap(), "iptables -A ....");
+        assert!(routing_hooks.pre_up.is_none());
+        assert!(routing_hooks.post_up.is_none());
+        assert!(routing_hooks.pre_down.is_none());
+        assert_eq!(routing_hooks.post_down.unwrap(), "iptables -A ....");
     }
-
     #[test]
-    fn parse_no_keywords_fails() {
+    fn parse_unknown_keywords_fails() {
+        let content = r#"
+            # only comments and unknown keys
+            FOO = bar
+            BAR = baz
+        "#;
+
+        let err = parse_routing_keywords(content, "myscript")
+            .unwrap_err()
+            .to_string();
+
+        // Check that the error mentions the script name
+        assert!(err.contains("myscript"), "Error should include script name");
+
+        // Check that the error indicates missing routing keywords
+        assert!(
+            err.contains("Unknown routing keyword"),
+            "Error message should indicate missing routing keywords"
+        );
+    }
+    #[test]
+    fn parse_invalid_syntax_fails() {
         let content = r#"
             # only comments
             echo hello
             something else
         "#;
 
-        let err = parse_routing_keywords(content, "myscript").unwrap_err();
+        let err = parse_routing_keywords(content, "myscript")
+            .unwrap_err()
+            .to_string();
 
+        // Check that the error mentions the script name
         assert!(err.contains("myscript"), "Error should include script name");
+
+        // Check that the error mentions invalid syntax or missing routing keywords
         assert!(
-            err.contains("does not contain any routing keywords"),
-            "Error message should indicate missing routing keywords"
+            err.contains("Invalid syntax"),
+            "Error message should indicate invalid syntax or missing routing keywords"
         );
     }
     #[test]
@@ -734,7 +785,7 @@ mod tests {
             "Parser should fail due to invalid commands"
         );
 
-        let err = result.unwrap_err();
+        let err = result.unwrap_err().to_string();
         assert!(
             err.contains("PostDown"),
             "Error must mention the invalid keyword"
@@ -751,13 +802,138 @@ mod tests {
             PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
         "#;
 
-        let (_, _, _, post_down, fwmark, has_bind_interface) =
-            parse_routing_keywords(content, "multi").expect("Should parse");
+        let routing_hooks = parse_routing_keywords(content, "multi").expect("Should parse");
 
         assert_eq!(
-            post_down.unwrap(),
+            routing_hooks.post_down.unwrap(),
             "iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE"
         );
+    }
+    fn iface(minimal: bool) -> Interface {
+        Interface {
+            name: Some("wg0".into()),
+            binding_iface: Some("eth0".into()),
+            has_script_bind_iface: !minimal,
+            routing_script_name: Some("route.sh".into()),
+            address: Some("10.0.0.1/24".into()),
+            listen_port: Some("51820".into()),
+            public_key: Some("pubkey".into()),
+            private_key: Some("privkey".into()),
+            dns: Some("1.1.1.1".into()),
+            table: Some("auto".into()),
+            mtu: Some("1420".into()),
+            pre_up: Some("foo".into()),
+            post_up: Some("bar".into()),
+            pre_down: Some("baz".into()),
+            post_down: Some("qux".into()),
+            fwmark: Some("123".into()),
+        }
+    }
+
+    fn peer(name: &str) -> Peer {
+        Peer {
+            name: Some(name.into()),
+            allowed_ips: Some("10.0.0.2/32".into()),
+            endpoint: Some("peer.example.com:51820".into()),
+            public_key: Some("pubkey".into()),
+            persistent_keepalive: Some("25".into()),
+        }
+    }
+
+    #[test]
+    fn writes_basic_interface() {
+        let cfg = WireguardConfig {
+            interface: iface(false),
+            peers: vec![],
+        };
+
+        let out = write_config(&cfg);
+
+        assert!(out.contains("[Interface]"));
+        assert!(out.contains("# Name = wg0"));
+        assert!(out.contains("# BindIface = eth0"));
+        assert!(out.contains("# RoutingScriptName = route.sh"));
+        assert!(out.contains("Address = 10.0.0.1/24"));
+        assert!(out.contains("PrivateKey = privkey"));
+        assert!(out.contains("FwMark = 123"));
+    }
+
+    #[test]
+    fn suppresses_binding_iface_when_flag_false() {
+        let mut iface = iface(true); // minimal: no bind iface shown
+        iface.has_script_bind_iface = false;
+
+        let cfg = WireguardConfig {
+            interface: iface,
+            peers: vec![],
+        };
+
+        let out = write_config(&cfg);
+
+        assert!(!out.contains("# BindIface"));
+    }
+
+    #[test]
+    fn omits_missing_fields() {
+        let iface = Interface {
+            name: Some("wg0".into()),
+            binding_iface: None,
+            has_script_bind_iface: true,
+            routing_script_name: None,
+            address: None,
+            listen_port: None,
+            private_key: None,
+            public_key: None,
+            dns: None,
+            table: None,
+            mtu: None,
+            pre_up: None,
+            post_up: None,
+            pre_down: None,
+            post_down: None,
+            fwmark: None,
+        };
+
+        let cfg = WireguardConfig {
+            interface: iface,
+            peers: vec![],
+        };
+
+        let out = write_config(&cfg);
+
+        assert!(out.contains("# Name = wg0"));
+        assert!(!out.contains("Address ="));
+        assert!(!out.contains("# BindIface"));
+    }
+
+    #[test]
+    fn writes_multiple_peers() {
+        let cfg = WireguardConfig {
+            interface: iface(false),
+            peers: vec![peer("peer1"), peer("peer2")],
+        };
+
+        let out = write_config(&cfg);
+
+        let count_peer_headers = out.matches("[Peer]").count();
+        assert_eq!(count_peer_headers, 2);
+
+        assert!(out.contains("# Name = peer1"));
+        assert!(out.contains("# Name = peer2"));
+    }
+
+    #[test]
+    fn peer_fields_render_correctly() {
+        let cfg = WireguardConfig {
+            interface: iface(false),
+            peers: vec![peer("p")],
+        };
+
+        let out = write_config(&cfg);
+
+        assert!(out.contains("AllowedIPs = 10.0.0.2/32"));
+        assert!(out.contains("Endpoint = peer.example.com:51820"));
+        assert!(out.contains("PersistentKeepalive = 25"));
     }
     //     #[test]PostDown =
     //     fn parse_write() {
