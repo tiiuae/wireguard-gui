@@ -138,7 +138,8 @@
               pname = "wireguard-gui";
               cargoExtraArgs = "";
               src = fileSetForCrate ./.;
-              #CARGO_BUILD_RUSTFLAGS = "-C link-arg=-lasan -Zproc-macro-backtrace";
+              # Inject Rust flags
+              CARGO_BUILD_RUSTFLAGS = "-D unused-must-use";
               buildPhaseCargoCommand = ''
                 if [[ "${buildType}" == "release" ]]; then
                      cargo build --release

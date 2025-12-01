@@ -4,6 +4,7 @@ use crate::cli;
     SPDX-License-Identifier: Apache-2.0
 */
 use crate::config::{WireguardConfig, parse_config};
+use anyhow::Context;
 use log::*;
 use std::fs;
 use std::io::{self, Read, Result, Write};
@@ -11,7 +12,23 @@ use std::path::Path;
 use std::process::*;
 use std::time::Duration;
 use wait_timeout::ChildExt;
+pub trait MutOptionExt<T> {
+    fn update(&mut self, new: Self) -> bool;
+}
 
+impl<T> MutOptionExt<T> for Option<T>
+where
+    T: PartialEq,
+{
+    fn update(&mut self, new: Self) -> bool {
+        if self != &new {
+            *self = new;
+            true
+        } else {
+            false
+        }
+    }
+}
 pub fn load_existing_configurations() -> Result<(Vec<WireguardConfig>, Option<String>)> {
     let mut cfgs = Vec::new();
     let mut errs = Vec::new();
@@ -34,11 +51,11 @@ pub fn load_existing_configurations() -> Result<(Vec<WireguardConfig>, Option<St
                 errs.push(msg);
                 continue;
             };
-            if cfg.interface.name.is_none() 
-                && let Some(file_name) = file_path.file_stem().and_then(|n| n.to_str()) {
-                    cfg.interface.name = Some(file_name.to_string());
-                }
-            
+            if cfg.interface.name.is_none()
+                && let Some(file_name) = file_path.file_stem().and_then(|n| n.to_str())
+            {
+                cfg.interface.name = Some(file_name.to_string());
+            }
 
             cfgs.push(cfg);
         }
@@ -64,30 +81,35 @@ pub fn generate_private_key() -> Result<String> {
         .map_err(|_| io::Error::other("Could not convert output of `wg genkey` to utf-8 string."))
 }
 
-pub fn generate_public_key(priv_key: String) -> Result<String> {
+pub fn generate_public_key(priv_key: String) -> anyhow::Result<String> {
     let mut child = Command::new("wg")
         .arg("pubkey")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .expect("Failed to spawn child process");
+        .context("Failed to spawn 'wg pubkey' process")?;
 
-    let mut stdin = child.stdin.take().expect("Failed to open stdin");
-    std::thread::spawn(move || {
+    // Write the private key to the child's stdin
+    if let Some(mut stdin) = child.stdin.take() {
         stdin
             .write_all(priv_key.trim().as_bytes())
-            .expect("Failed to write to stdin");
-    });
-
-    let output = child.wait_with_output().expect("Failed to read stdout");
-
-    if output.stdout.is_empty() {
-        return Err(io::Error::other("Failed to generate public key"));
+            .context("Failed to write private key to stdin")?;
+        stdin.flush().ok();
     }
 
-    String::from_utf8(output.stdout)
-        .map(|s| s.trim().into())
-        .map_err(|_| io::Error::other("Could not convert output of `wg pubkey` to utf-8 string."))
+    // Wait for the child process to finish and collect output
+    let output = child
+        .wait_with_output()
+        .context("Failed to read output from 'wg pubkey'")?;
+
+    if output.stdout.is_empty() {
+        anyhow::bail!("Failed to generate public key: no output from wg");
+    }
+
+    let pubkey =
+        String::from_utf8(output.stdout).context("Output from 'wg pubkey' is not valid UTF-8")?;
+
+    Ok(pubkey.trim().to_string())
 }
 
 /// Run a command with a timeout and return the exit status and stdout output.
@@ -100,10 +122,7 @@ pub fn wait_cmd_with_timeout(
 
     // Wait for the process to exit or timeout
     let status_code = match cmd.wait_timeout(timeout)? {
-        Some(status) => {
-            cmd.kill()?;
-            status.code()
-        }
+        Some(status) => status.code(),
         None => {
             // Process hasn't exited yet, kill it and get the status code
             debug!("Killing the process: {:?}", cmd);

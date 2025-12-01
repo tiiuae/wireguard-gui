@@ -156,7 +156,7 @@ impl FactoryComponent for PeerComp {
             Self::Input::Set(k, value) => {
                 match k {
                     PeerSetKind::Name => self.peer.name = value,
-                    PeerSetKind::AllowedIps => self.peer.allowed_ips = value, // TODO: check here whether same network with host cfg
+                    PeerSetKind::AllowedIps => self.peer.allowed_ips = value,
                     PeerSetKind::Endpoint => self.peer.endpoint = value,
                     PeerSetKind::PublicKey => self.peer.public_key = value,
                     PeerSetKind::PersistentKeepalive => self.peer.persistent_keepalive = value,

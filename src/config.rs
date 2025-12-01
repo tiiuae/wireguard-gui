@@ -3,18 +3,16 @@
     SPDX-License-Identifier: Apache-2.0
 */
 use crate::{cli, utils};
-use anyhow::Result;
-use anyhow::anyhow;
+use anyhow::{Context, Result, anyhow};
 use log::{debug, error, info, warn};
 use nix::unistd::{Gid, Group, Uid, User, chown};
 use pnet_datalink::interfaces;
 use std::fs;
 use std::io;
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RoutingKeyword {
     PreUp,
@@ -158,7 +156,6 @@ pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
                         "ListenPort" => cfg.interface.listen_port = Some(value),
                         "PrivateKey" => {
                             cfg.interface.public_key =
-                            // TODO: move it to where parse_config() is called. Because it has blocking I/O operation
                                 match utils::generate_public_key(value.clone()) {
                                     Ok(key) => Some(key),
                                     Err(e) => {
@@ -211,31 +208,24 @@ pub fn write_config(c: &WireguardConfig) -> String {
     let mut res = String::from("[Interface]\n");
     let iface = &c.interface;
 
-    // Conditional BindIface only when has_script_bind_iface == true
-    let binding_iface_entry = iface
-        .binding_iface
-        .as_deref()
-        .filter(|_| iface.has_script_bind_iface)
-        .map(|v| ("# BindIface", v));
-
+    // Interface section
     let iface_kvs = [
-        iface.name.as_deref().map(|v| ("# Name", v)),
-        binding_iface_entry,
-        iface
-            .routing_script_name
-            .as_deref()
-            .map(|v| ("# RoutingScriptName", v)),
-        iface.address.as_deref().map(|v| ("Address", v)),
-        iface.listen_port.as_deref().map(|v| ("ListenPort", v)),
-        iface.private_key.as_deref().map(|v| ("PrivateKey", v)),
-        iface.dns.as_deref().map(|v| ("DNS", v)),
-        iface.table.as_deref().map(|v| ("Table", v)),
-        iface.mtu.as_deref().map(|v| ("MTU", v)),
-        iface.pre_up.as_deref().map(|v| ("PreUp", v)),
-        iface.post_up.as_deref().map(|v| ("PostUp", v)),
-        iface.pre_down.as_deref().map(|v| ("PreDown", v)),
-        iface.post_down.as_deref().map(|v| ("PostDown", v)),
-        iface.fwmark.as_deref().map(|v| ("FwMark", v)),
+        Some("# Name").zip(iface.name.as_deref()),
+        Some("# BindIface")
+            .zip(iface.binding_iface.as_deref())
+            .filter(|_| iface.has_script_bind_iface),
+        Some("# RoutingScriptName").zip(iface.routing_script_name.as_deref()),
+        Some("Address").zip(iface.address.as_deref()),
+        Some("ListenPort").zip(iface.listen_port.as_deref()),
+        Some("PrivateKey").zip(iface.private_key.as_deref()),
+        Some("DNS").zip(iface.dns.as_deref()),
+        Some("Table").zip(iface.table.as_deref()),
+        Some("MTU").zip(iface.mtu.as_deref()),
+        Some("PreUp").zip(iface.pre_up.as_deref()),
+        Some("PostUp").zip(iface.post_up.as_deref()),
+        Some("PreDown").zip(iface.pre_down.as_deref()),
+        Some("PostDown").zip(iface.post_down.as_deref()),
+        Some("FwMark").zip(iface.fwmark.as_deref()),
     ];
     for (key, value) in iface_kvs.into_iter().flatten() {
         res.push_str(key);
@@ -249,13 +239,11 @@ pub fn write_config(c: &WireguardConfig) -> String {
         res.push_str("[Peer]\n");
 
         let peer_kvs = [
-            peer.name.as_deref().map(|v| ("# Name", v)),
-            peer.allowed_ips.as_deref().map(|v| ("AllowedIPs", v)),
-            peer.endpoint.as_deref().map(|v| ("Endpoint", v)),
-            peer.public_key.as_deref().map(|v| ("PublicKey", v)),
-            peer.persistent_keepalive
-                .as_deref()
-                .map(|v| ("PersistentKeepalive", v)),
+            Some("# Name").zip(peer.name.as_deref()),
+            Some("AllowedIPs").zip(peer.allowed_ips.as_deref()),
+            Some("Endpoint").zip(peer.endpoint.as_deref()),
+            Some("PublicKey").zip(peer.public_key.as_deref()),
+            Some("PersistentKeepalive").zip(peer.persistent_keepalive.as_deref()),
         ];
 
         for (key, value) in peer_kvs.into_iter().flatten() {
@@ -286,50 +274,59 @@ fn get_uid_gid(user: &str, group: &str) -> io::Result<(Uid, Gid)> {
     Ok((uid.into(), gid.into()))
 }
 
-pub fn write_configs_to_path(cfgs: &[&WireguardConfig], path: &Path) -> io::Result<()> {
-    // Make sure the parent directory exists
-    if let Some(parent) = path.parent()
-        && !parent.exists()
-    {
-        debug!("Parent directory not found. Creating: {}", parent.display());
-        fs::create_dir_all(parent)?;
+pub fn write_config_to_path(cfg: &WireguardConfig, path: &Path) -> anyhow::Result<()> {
+    // Helper to delete the file only if it already exists
+    let cleanup = |_: &anyhow::Error| {
+        let _ = fs::remove_file(path);
+    };
+    // 1. Ensure parent dir exists
+    let parent = path
+        .parent()
+        .context("Provided path has no parent directory")?;
+
+    if !parent.exists() {
+        debug!("Creating parent directory: {}", parent.display());
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory {}", parent.display()))?;
     }
 
-    let mut file = fs::File::create(path)?;
-    let mut perms = file.metadata()?.permissions();
-    perms.set_mode(0o600);
-    file.set_permissions(perms)?; // Iterate through each configuration and write it to a file
+    // Create file with secure permissions
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("Failed to create file {}", path.display()))?;
 
-    for cfg in cfgs.iter() {
-        // Generate the content for the configuration
-        let content = crate::config::write_config(cfg);
+    // Generate the content for the configuration
+    let content = crate::config::write_config(cfg);
 
-        // Print content for debugging
-        info!("Writing to file: {}", path.display());
-        debug!("Content:\n{}", content);
+    info!("Writing to file: {}", path.display());
+    debug!("Content:\n{}", content);
 
-        // Write the content to the file
-        file.write_all(content.as_bytes())?;
-    }
+    //  Write contents — if writing fails, delete the file
+    file.write_all(content.as_bytes())
+        .with_context(|| format!("Failed to write configuration to {}", path.display()))
+        .inspect_err(cleanup)?;
+
+    // Ensure data is flushed to disk
+    file.sync_all()
+        .with_context(|| format!("Failed to sync file {}", path.display()))
+        .inspect_err(cleanup)?;
 
     // Resolve UID and GID for the user and group
-    match get_uid_gid(
+    let (uid, gid) = get_uid_gid(
         cli::get_config_file_owner(),
         cli::get_config_file_owner_group(),
-    ) {
-        Ok((uid, gid)) => {
-            info!("Resolved UID: {}, GID: {}", uid, gid);
-            // Now you can proceed with ownership changes or other tasks
-            // For example, use nix::unistd::chown(path, Some(uid), Some(gid)) to apply the ownership
-            chown(path, Some(uid), Some(gid))
-                .map_err(|_| io::Error::other("Failed to change file ownership"))?;
-        }
-        Err(err) => {
-            error!("Error: {}", err);
-            fs::remove_file(path)?;
-            return Err(err);
-        }
-    }
+    )
+    .context("Failed to resolve UID/GID")
+    .inspect_err(cleanup)?;
+
+    // Set file ownership
+    chown(path, Some(uid), Some(gid))
+        .with_context(|| format!("Failed to change ownership for {}", path.display()))
+        .inspect_err(cleanup)?;
 
     Ok(())
 }
@@ -372,7 +369,7 @@ fn get_script_paths() -> Vec<PathBuf> {
 
 /// Read scripts and extract routing keywords
 pub fn extract_scripts_metadata() -> (Vec<RoutingScripts>, Option<String>) {
-    const MAX_CONTENT_CHARS: usize = 4096;
+    const MAX_CONTENT_CHARS: u64 = 4096;
     let mut errors = Vec::new();
     let mut scripts = Vec::new();
 
@@ -384,14 +381,14 @@ pub fn extract_scripts_metadata() -> (Vec<RoutingScripts>, Option<String>) {
             .to_string();
 
         // Skip oversized scripts
-        if let Ok(meta) = fs::metadata(&path) 
-            && meta.len() as usize > MAX_CONTENT_CHARS {
-                let msg = format!("Script {} is too large, skipping", name);
-                error!("{}", msg);
-                errors.push(msg);
-                continue;
-            }
-        
+        if let Ok(meta) = fs::metadata(&path)
+            && meta.len() > MAX_CONTENT_CHARS
+        {
+            let msg = format!("Script {} is too large, skipping", name);
+            error!("{}", msg);
+            errors.push(msg);
+            continue;
+        }
 
         // Read and parse script content
         match fs::read_to_string(&path) {
@@ -626,11 +623,12 @@ pub fn validate_binding_iface(
     binding_ifaces: &[String],
     cfg: &WireguardConfig,
 ) -> anyhow::Result<()> {
-    if let Some(iface) = &cfg.interface.binding_iface 
-        && !binding_ifaces.contains(iface) {
-            anyhow::bail!("Invalid binding interface: {iface}");
-        }
-    
+    if let Some(iface) = &cfg.interface.binding_iface
+        && !binding_ifaces.contains(iface)
+    {
+        anyhow::bail!("Invalid binding interface: {iface}");
+    }
+
     Ok(())
 }
 
