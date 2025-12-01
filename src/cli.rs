@@ -47,6 +47,10 @@ struct Args {
     /// Owner group of the config files
     #[arg(long, default_value = "root")]
     pub config_owner_group: String,
+
+    /// Doc url
+    #[arg(long)]
+    pub doc_url: String,
 }
 
 pub fn get_log_level_output() -> log::Level {
@@ -71,4 +75,8 @@ pub fn get_config_file_owner() -> &'static str {
 
 pub fn get_config_file_owner_group() -> &'static str {
     &CLI_ARGS.config_owner_group
+}
+
+pub fn get_doc_url() -> String {
+    CLI_ARGS.doc_url.clone()
 }

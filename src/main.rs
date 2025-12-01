@@ -5,15 +5,13 @@
 use crate::gtk::gdk_pixbuf;
 use anyhow::Context;
 use gtk::prelude::*;
-use log::{debug, error, info};
-use nix::unistd::chown;
+use log::{debug, error, info, trace};
 use relm4::factory::{DynamicIndex, FactoryVecDeque};
 use relm4::prelude::*;
 use relm4_components::alert::*;
 use relm4_components::open_button::{OpenButton, OpenButtonSettings};
 use relm4_components::open_dialog::OpenDialogSettings;
 use relm4_components::save_dialog::*;
-use std::os::unix::fs::MetadataExt;
 use std::{fs, path::PathBuf};
 use syslog::{BasicLogger, Facility, Formatter3164};
 use wireguard_gui::{cli::*, config::*, generator::*, overview::*, tunnel::*, utils::*};
@@ -35,11 +33,20 @@ struct App {
 #[derive(Debug)]
 enum AppMsg {
     ShowOverview(usize),
-    AddTunnel(Box<WireguardConfig>),
+    AddTunnel {
+        config: Box<WireguardConfig>,
+        set_default: bool,
+    },
     RemoveTunnel(DynamicIndex),
     ImportTunnel(PathBuf),
+    ProcessImportedTunnel(Box<WireguardConfig>, PathBuf),
     SaveConfigInitiate,
     SaveConfigFinish(Box<WireguardConfig>, Option<PathBuf>),
+    UpdateTunnel {
+        idx: usize,
+        new_tunnel_data: Box<TunnelData>,
+        is_save_clicked: bool,
+    },
     AddPeer,
     ExportConfigInitiate,
     ExportConfigFinish(PathBuf),
@@ -52,6 +59,12 @@ enum AppMsg {
     OverviewInitIfaceBindings(Vec<String>),
     TunnelModified,
     OpenUrl(String),
+    InitSyncFinished {
+        scripts: Vec<RoutingScripts>,
+        binding_ifaces: Vec<String>,
+        loaded_configs: Vec<WireguardConfig>,
+        initial_errors: Vec<String>,
+    },
     Ignore,
 }
 
@@ -135,7 +148,7 @@ impl SimpleComponent for App {
                         gtk::Button {
                             set_label: "Documentation",
                             connect_clicked =>
-                            Self::Input::OpenUrl("https://ghaf.tii.ae/ghaf/dev/ref/wireguard-gui/".into()),
+                            Self::Input::OpenUrl(get_doc_url()),
 
                         }
                     },
@@ -187,15 +200,7 @@ impl SimpleComponent for App {
     ) -> ComponentParts<Self> {
         let ghaf_pixbuf = pixbuf_from_bytes(GHAF_LOGO);
         let wg_pixbuf = pixbuf_from_bytes(WG_LOGO);
-        let (scripts, err) = extract_scripts_metadata();
-
-        if let Some(err_msg) = err {
-            sender.input(Self::Input::AddInitErrors(err_msg));
-        }
-
-        let binding_ifaces = get_binding_interfaces();
-
-        let mut tunnels = FactoryVecDeque::builder()
+        let tunnels = FactoryVecDeque::builder()
             .launch(gtk::ListBox::default())
             .forward(sender.input_sender(), |output| match output {
                 TunnelOutput::Remove(idx) => Self::Input::RemoveTunnel(idx),
@@ -203,55 +208,15 @@ impl SimpleComponent for App {
                 TunnelOutput::Error(msg) => Self::Input::Error(msg),
             });
 
-        match wireguard_gui::utils::load_existing_configurations() {
-            Ok((cfgs, err)) => {
-                let mut g = tunnels.guard();
-                /*
-                if there is no match for saved
-                BindingInterface and RoutingScriptName sections,
-                remove them from the config files
-                */
-                for mut cfg in cfgs {
-                    let mut needs_save = false;
+        sender.spawn_oneshot_command(gtk::glib::clone!(
+            #[strong]
+            sender,
+            move || {
+                let initial_load_cfg = perform_initial_loading();
 
-                    // Validate binding interface
-                    if let Err(err) = validate_binding_iface(&binding_ifaces, &cfg) {
-                        sender.input(Self::Input::AddInitErrors(err.to_string()));
-                        needs_save = true;
-                    }
-                    // Validate routing script
-                    else if let Err(err) = validate_assign_routing_script(&scripts, &mut cfg) {
-                        sender.input(Self::Input::AddInitErrors(err.to_string()));
-                        needs_save = true;
-                    }
-
-                    // Save the modified config back to disk if changes were made
-                    if needs_save {
-                        reset_interface_hooks(&mut cfg);
-                        if let Some(ref name) = cfg.interface.name {
-                            let path = get_configs_dir().join(format!("{name}.conf"));
-                            if let Err(e) = write_configs_to_path(&[&cfg], &path) {
-                                sender.input(Self::Input::AddInitErrors(format!(
-                                    "Failed to update config '{}': {}",
-                                    name, e
-                                )));
-                                continue;
-                            }
-                        }
-                    }
-
-                    g.push_back((cfg, true));
-                }
-                if let Some(err_msg) = err {
-                    sender.input(Self::Input::AddInitErrors(err_msg));
-                }
+                sender.input(initial_load_cfg);
             }
-            Err(err) => {
-                let msg = format!("Could not load existing configurations: {:#?}", err);
-                error!("{}", msg);
-                sender.input(Self::Input::AddInitErrors(msg));
-            }
-        };
+        ));
 
         let import_button = OpenButton::builder()
             .launch(OpenButtonSettings {
@@ -300,7 +265,10 @@ impl SimpleComponent for App {
                 }
                 OverviewOutput::Error(msg) => Self::Input::Error(msg),
                 OverviewOutput::AddInitErrors(msg) => Self::Input::AddInitErrors(msg),
-                OverviewOutput::FieldsModified => Self::Input::TunnelModified,
+                OverviewOutput::FieldsModified => {
+                    trace!("FieldsModified");
+                    Self::Input::TunnelModified
+                }
             });
 
         let generator =
@@ -308,7 +276,11 @@ impl SimpleComponent for App {
                 .launch(())
                 .forward(sender.input_sender(), |msg| match msg {
                     GeneratorOutput::GeneratedHostConfig(cfg) => {
-                        Self::Input::AddTunnel(Box::new(cfg))
+                        /* cfg, set some of fields default */
+                        Self::Input::AddTunnel {
+                            config: Box::new(cfg),
+                            set_default: true,
+                        }
                     }
                 });
 
@@ -352,16 +324,6 @@ impl SimpleComponent for App {
 
         let widgets = view_output!();
 
-        /* set routing scripts for overview model */
-        sender
-            .input_sender()
-            .emit(AppMsg::OverviewInitScripts(scripts));
-
-        /* set binding interfaces for overview model */
-        sender
-            .input_sender()
-            .emit(AppMsg::OverviewInitIfaceBindings(binding_ifaces));
-
         gtk::glib::idle_add_local_once(move || {
             sender.input(AppMsg::InitComplete);
         });
@@ -372,16 +334,28 @@ impl SimpleComponent for App {
         match msg {
             Self::Input::ShowOverview(idx) => {
                 self.selected_tunnel_idx = Some(idx);
-                let tunnel = self.tunnels.get(idx).unwrap();
-                self.overview
-                    .emit(OverviewInput::ShowConfig(Box::new(tunnel.config.clone())));
+                trace!("select-Tunnel idx:{}", idx);
+
+                if let Some(tunnel) = self.tunnels.get(idx) {
+                    trace!(
+                        "select-Tunnel idx:{}, button:{},mark_saved:{}",
+                        idx, self.save_button_enabled, tunnel.data.saved
+                    );
+                    self.overview.emit(OverviewInput::ShowConfig(Box::new(
+                        tunnel.data.config.clone(),
+                    )));
+                    self.save_button_enabled = !tunnel.data.saved;
+                }
             }
-            Self::Input::AddTunnel(config) => {
+            Self::Input::AddTunnel {
+                config,
+                set_default,
+            } => {
                 let mut tunnels = self.tunnels.guard();
 
                 if tunnels
                     .iter()
-                    .any(|t| t.config.interface.name == config.interface.name)
+                    .any(|t| t.data.config.interface.name == config.interface.name)
                 {
                     sender.input(Self::Input::Error(format!(
                         "Tunnel with name {} already exists",
@@ -391,12 +365,26 @@ impl SimpleComponent for App {
                 }
 
                 tunnels.push_back((*config, false));
+                trace!("AddTunnel");
+
+                if set_default {
+                    self.overview.emit(OverviewInput::SetRoutingScript(None));
+                }
+
+                let last_idx = tunnels.len() - 1;
+                // Use idle_add to select after UI updates
+                let list_box = tunnels.widget().clone();
+                gtk::glib::idle_add_local_once(move || {
+                    if let Some(row) = list_box.row_at_index(last_idx as i32) {
+                        list_box.select_row(Some(&row));
+                    }
+                });
             }
             Self::Input::RemoveTunnel(idx) => {
                 // 1) Lock and inspect the list
                 let mut tunnels = self.tunnels.guard();
                 if let Some(tunnel) = tunnels.get(idx.current_index()) {
-                    let path = tunnel.path();
+                    let path = tunnel.data.path();
 
                     // 2) Attempt to delete the file
                     match fs::remove_file(&path) {
@@ -424,28 +412,54 @@ impl SimpleComponent for App {
                 tunnels.remove(idx.current_index());
             }
             Self::Input::ImportTunnel(path) => {
-                let file_content = std::fs::read_to_string(&path);
-                let res = file_content.as_ref().map(|c| parse_config(c));
+                sender.spawn_oneshot_command(gtk::glib::clone!(
+                    #[strong]
+                    sender,
+                    move || {
+                        // Read file (blocking)
+                        let content = match std::fs::read_to_string(&path) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                sender.input(Self::Input::Error(format!(
+                                    "Failed to read file {}: {}",
+                                    path.display(),
+                                    e
+                                )));
+                                return;
+                            }
+                        };
 
-                let Ok(Ok(mut config)) = res else {
-                    sender.input(Self::Input::Error(format!("{res:#?}")));
-                    return;
-                };
+                        // Parse (blocking due to generate_public_key)
+                        let config = match parse_config(&content) {
+                            Ok(cfg) => cfg,
+                            Err(e) => {
+                                sender.input(Self::Input::Error(format!(
+                                    "Failed to parse config: {}",
+                                    e
+                                )));
+                                return;
+                            }
+                        };
 
-                /*
-                Importing files from external source.
-                Routing scripts and binding interface parameters should be removed.
-                 */
+                        sender.input(Self::Input::ProcessImportedTunnel(Box::new(config), path));
+                    }
+                ));
+            }
+            Self::Input::ProcessImportedTunnel(mut config, path) => {
                 reset_interface_hooks(&mut config);
 
                 if config.interface.name.is_none() {
-                    let name = path.file_stem().and_then(|s| s.to_str().map(str::to_owned));
+                    let name = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned);
 
                     match name {
-                        Some(name) => config.interface.name = Some(name),
+                        Some(n) => config.interface.name = Some(n),
                         None => {
                             sender.input(Self::Input::Error(format!(
-                                "Invalid file name: {}",
+                                "Invalid filename: {}",
                                 path.display()
                             )));
                             return;
@@ -453,30 +467,55 @@ impl SimpleComponent for App {
                     }
                 }
 
-                let cfg_path = wireguard_gui::cli::get_configs_dir()
-                    .join(format!("{}.conf", config.interface.name.as_ref().unwrap()));
+                let Some(ref name) = config.interface.name else {
+                    sender.input(Self::Input::Error("Config has no name".into()));
+                    return;
+                };
 
-                if let Err(e) = write_configs_to_path(&[&config], &cfg_path) {
+                let cfg_path = wireguard_gui::cli::get_configs_dir().join(format!("{}.conf", name));
+
+                if cfg_path.exists() {
                     sender.input(Self::Input::Error(format!(
-                        "Error writing config to file: {e}"
+                        "Config '{}' already exists",
+                        name
                     )));
                     return;
                 }
 
-                sender.input(Self::Input::AddTunnel(Box::new(config)));
+                sender.spawn_oneshot_command(gtk::glib::clone!(
+                    #[strong]
+                    sender,
+                    move || {
+                        if let Err(e) = write_config_to_path(&config, &cfg_path) {
+                            sender.input(Self::Input::Error(format!(
+                                "Failed to write config: {}",
+                                e
+                            )));
+                            return;
+                        }
+
+                        sender.input(Self::Input::AddTunnel {
+                            config,
+                            set_default: false,
+                        });
+                    }
+                ));
             }
             Self::Input::TunnelModified => {
                 if !self.init_complete {
                     // Ignore modifications during init
                     return;
                 }
+                trace!("TunnelModified");
 
-                if let Some(idx) = self.selected_tunnel_idx 
-                    && let Some(selected_tunnel) = self.tunnels.guard().get_mut(idx) {
-                        selected_tunnel.mark_dirty();
-                        self.save_button_enabled = true;
-                    }
-                
+                if let Some(idx) = self.selected_tunnel_idx
+                    && let Some(selected_tunnel) = self.tunnels.guard().get_mut(idx)
+                {
+                    trace!("TunnelModified- selected_tunnel:{:#?}", selected_tunnel);
+
+                    selected_tunnel.data.saved = false;
+                    self.save_button_enabled = !selected_tunnel.data.saved;
+                }
             }
             Self::Input::SaveConfigInitiate => {
                 self.overview.emit(OverviewInput::CollectTunnel(None));
@@ -486,71 +525,78 @@ impl SimpleComponent for App {
                 .emit(SaveDialogMsg::SaveAs("my_export.conf".into())),
 
             Self::Input::SaveConfigFinish(config, path) => {
-                let is_path_none = path.is_none();
                 let Some(idx) = self.selected_tunnel_idx else {
                     return;
                 };
                 if let Some(selected_tunnel) = self.tunnels.guard().get_mut(idx) {
-                    if selected_tunnel.active {
+                    if selected_tunnel.data.active {
                         sender.input(Self::Input::Error(
                             "Tunnel should be disabled before saving the configuration".into(),
                         ));
                         return;
                     }
-                    // TODO: Tunnel::new() has std::process function
-                    let new_tunnel = Tunnel::new(*config, false);
-                    let path = match path {
-                        Some(p) if validate_export_path(&p) => p,
-                        Some(_) => {
-                            sender.input(Self::Input::Error(
-                                "Config file can be exported only under 'home' directory".into(),
-                            ));
-                            return;
-                        }
-                        None => new_tunnel.path(),
-                    };
 
-                    if let Err(e) = fs::write(path.clone(), write_config(&new_tunnel.config)) {
-                        sender.input(Self::Input::Error(format!("{e}")));
-                        return;
-                    }
+                    sender.spawn_oneshot_command(gtk::glib::clone!(
+                        #[strong]
+                        sender,
+                        move || {
+                            /* if path is None, it is called by 'Save' function.
+                            Otherwise it is called by 'Export' function */
+                            let is_save_clicked = path.is_none();
+                            let new_tunnel_data = TunnelData::new(*config, false);
+                            let save_path = match path {
+                                Some(p) if validate_export_path(&p) => p,
+                                Some(_) => {
+                                    sender.input(Self::Input::Error(
+                                        "Config file can be exported only under 'home' directory"
+                                            .into(),
+                                    ));
+                                    return;
+                                }
+                                None => new_tunnel_data.path(),
+                            };
 
-                    // Change ownership of the file to the parent directory's UID and GID
-                    let (uid, guid) = match path.parent().and_then(|p| fs::metadata(p).ok()) {
-                        Some(metadata) => (metadata.uid(), metadata.gid()),
-                        None => {
-                            sender.input(Self::Input::Error(format!(
-                                "Could not get metadata for path: {}",
-                                path.display()
+                            info!("Saving config file to {}", save_path.display());
+
+                            if let Err(e) =
+                                write_config_to_path(&new_tunnel_data.config, &save_path)
+                            {
+                                sender.input(Self::Input::Error(e.to_string()));
+                                return;
+                            }
+                            sender.input(Self::Input::Info(format!(
+                                "Configuration saved to {}",
+                                save_path.display()
                             )));
-                            return;
+
+                            sender.input(Self::Input::UpdateTunnel {
+                                idx,
+                                new_tunnel_data: Box::new(new_tunnel_data),
+                                is_save_clicked,
+                            });
                         }
-                    };
-
-                    info!(
-                        "Setting export config Path: {}, UID: {}, GID: {}",
-                        path.display(),
-                        uid,
-                        guid
+                    ));
+                }
+            }
+            Self::Input::UpdateTunnel {
+                idx,
+                new_tunnel_data,
+                is_save_clicked,
+            } => {
+                if let Some(selected_tunnel) = self.tunnels.guard().get_mut(idx) {
+                    if is_save_clicked {
+                        selected_tunnel.update_from(*new_tunnel_data);
+                    }
+                    self.save_button_enabled = !selected_tunnel.data.saved;
+                    trace!(
+                        "Tunnel idx:{}, button:{},mark_saved:{}",
+                        idx, self.save_button_enabled, selected_tunnel.data.saved
                     );
-
-                    if let Err(e) = chown(&path, Some(uid.into()), Some(guid.into())) {
-                        sender.input(Self::Input::Error(format!(
-                            "Failed to change ownership of {}: {}",
-                            path.display(),
-                            e
-                        )));
-                        return;
-                    }
-
-                    sender.input(Self::Input::Info(format!(
-                        "Configuration saved to {}",
-                        path.display()
+                } else {
+                    sender.input(Self::Input::Error(format!(
+                        "Tunnel idx cannot be found :{}",
+                        idx
                     )));
-                    if is_path_none {
-                        selected_tunnel.update_from(new_tunnel);
-                    }
-                    self.save_button_enabled = false;
                 }
             }
             Self::Input::AddPeer => {
@@ -610,21 +656,50 @@ impl SimpleComponent for App {
                     self.init_err_buffer.clear();
                     sender.input(Self::Input::Error(combined));
                 }
+                debug!("Init process is completed");
             }
             AppMsg::OpenUrl(url) => {
                 // spawn a Tokio task
-                let sender_clone = sender.clone();
-                sender.oneshot_command(async move {
-                    if let Err(e) = tokio::process::Command::new("xdg-open")
-                        .arg(&url)
-                        .status()
-                        .await
-                    {
-                        let msg = format!("Failed to open URL '{}': {}", url, e);
-                        error!("{}", msg);
-                        sender_clone.input(AppMsg::Error(msg));
+                sender.oneshot_command(gtk::glib::clone!(
+                    #[strong]
+                    sender,
+                    async move {
+                        if let Err(e) = tokio::process::Command::new("xdg-open")
+                            .arg(&url)
+                            .status()
+                            .await
+                        {
+                            let msg = format!("Failed to open URL '{}': {}", url, e);
+                            error!("{}", msg);
+                            sender.input(Self::Input::Error(msg));
+                        }
                     }
-                });
+                ));
+            }
+            AppMsg::InitSyncFinished {
+                scripts,
+                binding_ifaces,
+                loaded_configs,
+                initial_errors,
+            } => {
+                // 1) Push errors
+                for err in initial_errors {
+                    sender.input(Self::Input::AddInitErrors(err));
+                }
+
+                // 2) Send scripts + interfaces to Overview
+                sender.input(Self::Input::OverviewInitScripts(scripts.clone()));
+                sender.input(Self::Input::OverviewInitIfaceBindings(
+                    binding_ifaces.clone(),
+                ));
+
+                // 3) Insert loaded configs into tunnels Factory
+                let mut guard = self.tunnels.guard();
+                for cfg in loaded_configs {
+                    guard.push_back((cfg, true));
+                }
+
+                debug!("Sync init is completed");
             }
             Self::Input::Ignore => (),
         }
@@ -695,4 +770,68 @@ fn pixbuf_from_bytes(bytes: &[u8]) -> anyhow::Result<gdk_pixbuf::Pixbuf> {
     loader
         .pixbuf()
         .context("PixbufLoader returned no pixbuf...")
+}
+fn perform_initial_loading() -> AppMsg {
+    let mut initial_errors = Vec::new();
+
+    // 1. Load routing scripts
+    let (scripts, script_err) = extract_scripts_metadata();
+    if let Some(err) = script_err {
+        initial_errors.push(err);
+    }
+    debug!("scripts: {:#?}", scripts);
+
+    // 2. Load available interfaces
+    let binding_ifaces = get_binding_interfaces();
+
+    // 3. Load existing configs
+    let cfgs_result = wireguard_gui::utils::load_existing_configurations();
+
+    let mut loaded_configs = Vec::new();
+    match cfgs_result {
+        Ok((cfgs, err_opt)) => {
+            if let Some(err) = err_opt {
+                initial_errors.push(err);
+            }
+
+            for mut cfg in cfgs {
+                let mut needs_save = false;
+
+                // Validate iface binding
+                if let Err(e) = validate_binding_iface(&binding_ifaces, &cfg) {
+                    initial_errors.push(e.to_string());
+                    needs_save = true;
+                }
+
+                // Validate routing script
+                if let Err(e) = validate_assign_routing_script(&scripts, &mut cfg) {
+                    initial_errors.push(e.to_string());
+                    needs_save = true;
+                }
+
+                // If modified → save it back
+                if needs_save {
+                    reset_interface_hooks(&mut cfg);
+                    if let Some(name) = &cfg.interface.name {
+                        let path = get_configs_dir().join(format!("{name}.conf"));
+                        if let Err(e) = write_config_to_path(&cfg, &path) {
+                            initial_errors.push(format!("Failed to update {name}: {e}"));
+                        }
+                    }
+                }
+
+                loaded_configs.push(cfg);
+            }
+        }
+        Err(e) => {
+            initial_errors.push(format!("Could not load existing configurations: {e:#?}"));
+        }
+    }
+
+    AppMsg::InitSyncFinished {
+        scripts,
+        binding_ifaces,
+        loaded_configs,
+        initial_errors,
+    }
 }

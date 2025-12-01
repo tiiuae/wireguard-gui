@@ -15,8 +15,8 @@ use crate::{cli, config::*};
 use getifaddrs::{InterfaceFlags, getifaddrs};
 use log::*;
 use relm4_components::alert::*;
-use std::process::Stdio;
 use std::path::Path;
+use std::process::Stdio;
 #[derive(PartialEq)]
 pub enum NetState {
     IplinkUp = 0x01,
@@ -27,42 +27,52 @@ pub enum NetState {
 
 #[derive(Debug)]
 pub struct Tunnel {
+    pub data: TunnelData,
+    pub pending_remove: Option<DynamicIndex>,
+    alert_dialog: Option<Controller<Alert>>,
+}
+
+#[derive(Debug)]
+pub struct TunnelData {
     pub name: String,
     pub config: WireguardConfig,
     pub active: bool,
-    pub pending_remove: Option<DynamicIndex>,
-    alert_dialog: Option<Controller<Alert>>,
     pub saved: bool,
 }
 
-impl Tunnel {
+impl TunnelData {
     pub fn new(config: WireguardConfig, saved: bool) -> Self {
         let name = config.interface.name.clone().unwrap_or("unknown".into());
-
-        let active = Self::is_wg_iface_running(&name) == NetState::WgQuickUp;
+        let active: bool = Tunnel::is_wg_iface_running(&name) == NetState::WgQuickUp;
 
         Self {
             name,
             config,
             active,
-            pending_remove: None,
-            alert_dialog: None,
             saved,
         }
     }
-    pub fn mark_saved(&mut self) {
-        self.saved = true;
+    pub fn path(&self) -> PathBuf {
+        if self.name != "unknown" {
+            return cli::get_configs_dir().join(format!("{}.conf", self.name));
+        }
+        PathBuf::new()
     }
+}
 
-    pub fn mark_dirty(&mut self) {
-        self.saved = false;
+impl Tunnel {
+    pub fn new(data: TunnelData) -> Self {
+        Self {
+            data,
+            pending_remove: None,
+            alert_dialog: None,
+        }
     }
-    pub fn update_from(&mut self, other: Tunnel) {
-        self.active = other.active;
-        self.pending_remove = other.pending_remove;
-        self.config = other.config;
-        self.name = other.name;
-        self.mark_saved();
+    pub fn update_from(&mut self, other: TunnelData) {
+        self.data.active = other.active;
+        self.data.config = other.config;
+        self.data.name = other.name;
+        self.data.saved = true;
     }
     fn is_interface_up(interface_name: &str) -> Result<bool, std::io::Error> {
         let ifaddrs =
@@ -77,31 +87,39 @@ impl Tunnel {
 
         Ok(false)
     }
-
     fn is_cfg_valid(&self) -> anyhow::Result<()> {
-        if self.config.interface.public_key.is_none() {
-            anyhow::bail!("Public key is not defined in interface section");
+        let iface = &self.data.config.interface;
+
+        // Check required interface fields
+        let required_fields = [
+            ("Public key", iface.public_key.as_deref()),
+            ("Listen port", iface.listen_port.as_deref()),
+            ("IP address", iface.address.as_deref()),
+        ];
+
+        for (name, value) in required_fields {
+            if value.is_none() {
+                anyhow::bail!("{name} is not defined in interface section");
+            }
         }
 
-        if self.config.interface.listen_port.is_none() {
-            anyhow::bail!("Listen port is not defined in interface section");
-        }
-
-        if self.config.interface.address.is_none() {
-            anyhow::bail!("IP address is not defined in interface section");
-        }
-
-        if self.config.peers.is_empty() {
+        // Check peers exist
+        let peers = &self.data.config.peers;
+        if peers.is_empty() {
             anyhow::bail!("No peers defined");
         }
 
-        if self
-            .config
-            .peers
+        // Check peer public keys
+        if peers
             .iter()
-            .any(|p| p.public_key.as_deref().is_none_or(|p| p.trim().is_empty()))
+            .any(|p| p.public_key.as_deref().is_none_or(|v| v.trim().is_empty()))
         {
             anyhow::bail!("Peer public key is empty");
+        }
+
+        // Binding interface check
+        if iface.has_script_bind_iface && iface.binding_iface.is_none() {
+            anyhow::bail!("Binding interface cannot be selected as 'None'");
         }
 
         Ok(())
@@ -134,17 +152,14 @@ impl Tunnel {
         NetState::WgQuickUp
     }
 
-    pub fn path(&self) -> PathBuf {
-        cli::get_configs_dir().join(format!("{}.conf", self.name))
-    }
-
     /// Toggle the `WireGuard` interface using wireguard-tools.
     fn execute_toggle(name: &str, path: &Path) -> anyhow::Result<()> {
         let run_wg_quick = |action: &str| -> Result<(), io::Error> {
             let cmd_str = format!("wg-quick {} {}", action, name);
 
             let cmd = std::process::Command::new("wg-quick")
-                .args([action, path.to_str().unwrap()])
+                .arg(action)
+                .arg(path)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()?;
@@ -218,12 +233,12 @@ impl FactoryComponent for Tunnel {
 
             #[name(switch)]
             gtk::Switch {
-                set_active: self.active,
+                set_active: self.data.active,
                 connect_state_notify => Self::Input::Toggle,
             },
 
             gtk::Label {
-                set_label: &self.name,
+                set_label: &self.data.name,
             },
 
             gtk::Button::with_label("Remove") {
@@ -241,8 +256,8 @@ impl FactoryComponent for Tunnel {
         _index: &DynamicIndex,
         sender: FactorySender<Self>,
     ) -> Self {
-        let mut new_self_cfg = Self::new(config, saved);
-
+        let data = TunnelData::new(config, saved);
+        let mut new_tunnel = Tunnel::new(data);
         let alert_dialog = Alert::builder()
             .launch(AlertSettings {
                 text: Some(String::from("Are you sure to remove this tunnel?")),
@@ -256,9 +271,9 @@ impl FactoryComponent for Tunnel {
                 AlertResponse::Confirm => Self::Input::RemoveConfirmed,
                 _ => Self::Input::Ignore,
             });
-        new_self_cfg.alert_dialog = Some(alert_dialog);
 
-        new_self_cfg
+        new_tunnel.alert_dialog = Some(alert_dialog);
+        new_tunnel
     }
 
     fn update_with_view(
@@ -271,8 +286,8 @@ impl FactoryComponent for Tunnel {
             // In the Toggle message handler:
             Self::Input::Toggle => {
                 // Only validate when activating (not when deactivating)
-                if !self.active {
-                    if !self.saved {
+                if !self.data.active {
+                    if !self.data.saved {
                         sender.output_sender().emit(TunnelOutput::Error(
                             "You must save the configuration before activating the tunnel.".into(),
                         ));
@@ -289,9 +304,9 @@ impl FactoryComponent for Tunnel {
                     }
                 }
                 // Capture needed data before moving into async block
-                let tunnel_name = self.name.clone();
-                let tunnel_path = self.path();
-                let current_active = self.active;
+                let tunnel_name = self.data.name.clone();
+                let tunnel_path = self.data.path();
+                let current_active = self.data.active;
 
                 sender.spawn_oneshot_command(move || {
                     match Tunnel::execute_toggle(&tunnel_name, &tunnel_path) {
@@ -332,13 +347,13 @@ impl FactoryComponent for Tunnel {
     ) {
         match message {
             TunnelCommandOutput::ToggleSuccess(new_active_state) => {
-                self.active = new_active_state;
-                widgets.switch.set_state(self.active);
-                debug!("connection state: {}", self.active);
+                self.data.active = new_active_state;
+                widgets.switch.set_state(self.data.active);
+                debug!("connection state: {}", self.data.active);
             }
             TunnelCommandOutput::ToggleError(err) => {
                 sender.output_sender().emit(TunnelOutput::Error(err));
-                widgets.switch.set_state(self.active); // Revert switch state
+                widgets.switch.set_state(self.data.active); // Revert switch state
             }
         }
     }
