@@ -59,7 +59,7 @@ impl TryFrom<HashMap<String, Option<String>>> for GenerationSettings {
 }
 
 impl GenerationSettings {
-    pub fn generate(&self) -> Result<WireguardConfig, std::io::Error> {
+    pub fn generate(&self) -> anyhow::Result<WireguardConfig> {
         let listen_port = self.listen_port.to_string();
 
         let host_private_key = utils::generate_private_key()?;
