@@ -45,7 +45,16 @@
         commonArgs = {
           inherit src;
           strictDeps = true;
-          nativeBuildInputs = with pkgs; [pkg-config wrapGAppsHook4];
+          nativeBuildInputs = with pkgs; [
+            openssl
+            pkg-config
+            eza
+            fd
+            clang
+            cargo-audit
+            wrapGAppsHook4
+            makeWrapper
+          ];
 
           buildInputs = with pkgs; [
             wireguard-tools
@@ -78,6 +87,7 @@
               ./Cargo.toml
               ./Cargo.lock
               ./src
+              ./assets
               crate
             ];
           };
@@ -128,16 +138,8 @@
               pname = "wireguard-gui";
               cargoExtraArgs = "";
               src = fileSetForCrate ./.;
-              #CARGO_BUILD_RUSTFLAGS = "-C link-arg=-lasan -Zproc-macro-backtrace";
-              nativeBuildInputs = with pkgs; [
-                openssl
-                pkg-config
-                eza
-                fd
-                clang
-                cargo-audit
-                wrapGAppsHook4
-              ];
+              # Inject Rust flags
+              CARGO_BUILD_RUSTFLAGS = "-D unused-must-use";
               buildPhaseCargoCommand = ''
                 if [[ "${buildType}" == "release" ]]; then
                      cargo build --release
@@ -155,6 +157,7 @@
               '';
               postFixup = ''
                 wrapProgram $out/bin/wireguard-gui \
+                  --prefix PATH : ${lib.makeBinPath [ pkgs.wireguard-tools pkgs.xdg-utils ]} \
                   --set LIBGL_ALWAYS_SOFTWARE true \
                   --set G_MESSAGES_DEBUG all
               '';
@@ -175,7 +178,6 @@
               # Build the crate as part of `nix flake check` for convenience
               wireguardGuiRelease
               wireguardGuiPackage-cargoTarpaulin
-
               ;
           };
           devShells.default = craneLib.devShell {

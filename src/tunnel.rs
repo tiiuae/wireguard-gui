@@ -5,7 +5,6 @@
 use std::{
     io::{self},
     path::PathBuf,
-    process::Command,
 };
 
 use gtk::prelude::*;
@@ -13,12 +12,11 @@ use relm4::prelude::*;
 
 use crate::utils::*;
 use crate::{cli, config::*};
-use getifaddrs::{getifaddrs, InterfaceFlags};
+use getifaddrs::{InterfaceFlags, getifaddrs};
 use log::*;
 use relm4_components::alert::*;
-use std::net::SocketAddr;
-use std::str::FromStr;
-
+use std::path::Path;
+use std::process::Stdio;
 #[derive(PartialEq)]
 pub enum NetState {
     IplinkUp = 0x01,
@@ -29,32 +27,52 @@ pub enum NetState {
 
 #[derive(Debug)]
 pub struct Tunnel {
-    pub name: String,
-    pub config: WireguardConfig,
-    pub active: bool,
+    pub data: TunnelData,
     pub pending_remove: Option<DynamicIndex>,
     alert_dialog: Option<Controller<Alert>>,
 }
 
-impl Tunnel {
-    pub fn new(config: WireguardConfig) -> Self {
-        let name = config.interface.name.clone().unwrap_or("unknown".into());
+#[derive(Debug)]
+pub struct TunnelData {
+    pub name: String,
+    pub config: WireguardConfig,
+    pub active: bool,
+    pub saved: bool,
+}
 
-        let active = Self::is_wg_iface_running(&name) == NetState::WgQuickUp;
+impl TunnelData {
+    pub fn new(config: WireguardConfig, saved: bool) -> Self {
+        let name = config.interface.name.clone().unwrap_or("unknown".into());
+        let active: bool = Tunnel::is_wg_iface_running(&name) == NetState::WgQuickUp;
 
         Self {
             name,
             config,
             active,
+            saved,
+        }
+    }
+    pub fn path(&self) -> PathBuf {
+        if self.name != "unknown" {
+            return cli::get_configs_dir().join(format!("{}.conf", self.name));
+        }
+        PathBuf::new()
+    }
+}
+
+impl Tunnel {
+    pub fn new(data: TunnelData) -> Self {
+        Self {
+            data,
             pending_remove: None,
             alert_dialog: None,
         }
     }
-    pub fn update_from(&mut self, other: Tunnel) {
-        self.active = other.active;
-        self.pending_remove = other.pending_remove;
-        self.config = other.config;
-        self.name = other.name;
+    pub fn update_from(&mut self, other: TunnelData) {
+        self.data.active = other.active;
+        self.data.config = other.config;
+        self.data.name = other.name;
+        self.data.saved = true;
     }
     fn is_interface_up(interface_name: &str) -> Result<bool, std::io::Error> {
         let ifaddrs =
@@ -69,12 +87,49 @@ impl Tunnel {
 
         Ok(false)
     }
+    fn is_cfg_valid(&self) -> anyhow::Result<()> {
+        let iface = &self.data.config.interface;
+
+        // Check required interface fields
+        let required_fields = [
+            ("Public key", iface.public_key.as_deref()),
+            ("Listen port", iface.listen_port.as_deref()),
+            ("IP address", iface.address.as_deref()),
+        ];
+
+        for (name, value) in required_fields {
+            if value.is_none() {
+                anyhow::bail!("{name} is not defined in interface section");
+            }
+        }
+
+        // Check peers exist
+        let peers = &self.data.config.peers;
+        if peers.is_empty() {
+            anyhow::bail!("No peers defined");
+        }
+
+        // Check peer public keys
+        if peers
+            .iter()
+            .any(|p| p.public_key.as_deref().is_none_or(|v| v.trim().is_empty()))
+        {
+            anyhow::bail!("Peer public key is empty");
+        }
+
+        // Binding interface check
+        if iface.has_script_bind_iface && iface.binding_iface.is_none() {
+            anyhow::bail!("Binding interface cannot be selected as 'None'");
+        }
+
+        Ok(())
+    }
 
     fn is_wg_iface_running(interface: &str) -> NetState {
         let cmd_str = format!("wg show {interface}");
 
         // Run `wg show <interface>`
-        let wg_output = Command::new("wg")
+        let wg_output = std::process::Command::new("wg")
             .arg("show")
             .arg(interface)
             .stdout(std::process::Stdio::piped())
@@ -97,48 +152,30 @@ impl Tunnel {
         NetState::WgQuickUp
     }
 
-    pub fn path(&self) -> PathBuf {
-        cli::get_configs_dir().join(format!("{}.conf", self.name))
-    }
-
     /// Toggle the `WireGuard` interface using wireguard-tools.
-    pub fn try_toggle(&mut self) -> Result<(), io::Error> {
-        let is_endpoint_valid = |config: &WireguardConfig| -> Result<(), io::Error> {
-            for peer in &config.peers {
-                if let Some(endpoint) = peer.endpoint.as_ref() {
-                    // Try to parse the endpoint into a SocketAddr
-                    if SocketAddr::from_str(endpoint).is_err() {
-                        return Err(io::Error::other("Invalid endpoint format"));
-                    }
-                }
-            }
-            Ok(())
-        };
-
-        // Helper closure to run a command and check its success
+    fn execute_toggle(name: &str, path: &Path) -> anyhow::Result<()> {
         let run_wg_quick = |action: &str| -> Result<(), io::Error> {
-            let cmd_str = format!("wg-quick {} {}", action, self.name);
+            let cmd_str = format!("wg-quick {} {}", action, name);
 
-            let cmd = Command::new("wg-quick")
-                .args([action, &self.name])
+            let cmd = std::process::Command::new("wg-quick")
+                .args([action, path.to_str().unwrap()])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
                 .spawn()?;
             debug!("running cmd: {cmd_str}");
-            if !wait_cmd_with_timeout(cmd, 3, Some(&cmd_str)).is_ok_and(|(code, _)| code == Some(0))
-            {
-                error!("Failed to execute wg-quick {} {}", action, &self.name);
+            let (status_code, output) = wait_cmd_with_timeout(cmd, 5, Some(&cmd_str))?;
+
+            if status_code != Some(0) {
                 return Err(io::Error::other(format!(
-                    "Failed to execute wg-quick {action}",
+                    "Failed to execute wg-quick {action}: {}",
+                    output.trim()
                 )));
             }
+
             Ok(())
         };
 
-        let state = Self::is_wg_iface_running(self.name.as_str());
-
-        // Check if the endpoint is valid before wireguard inteface is up
-        if state != NetState::WgQuickUp {
-            is_endpoint_valid(&self.config)?;
-        }
+        let state = Self::is_wg_iface_running(name);
 
         match state {
             NetState::IplinkDown => {
@@ -149,9 +186,10 @@ impl Tunnel {
                 run_wg_quick("down")?;
             }
             NetState::WgQuickDown => {
+                // Validation already done before calling this
                 run_wg_quick("up")?;
             }
-            _ => return Err(io::Error::other("Unknown interface state")),
+            _ => anyhow::bail!("Unknown interface state"),
         }
 
         Ok(())
@@ -171,13 +209,18 @@ pub enum TunnelOutput {
     Remove(DynamicIndex),
     Error(String),
 }
+#[derive(Debug)]
+pub enum TunnelCommandOutput {
+    ToggleSuccess(bool), // new active state
+    ToggleError(String),
+}
 
 #[relm4::factory(pub)]
 impl FactoryComponent for Tunnel {
-    type Init = WireguardConfig;
+    type Init = (WireguardConfig, bool);
     type Input = TunnelMsg;
     type Output = TunnelOutput;
-    type CommandOutput = ();
+    type CommandOutput = TunnelCommandOutput;
     type ParentWidget = gtk::ListBox;
 
     view! {
@@ -189,12 +232,12 @@ impl FactoryComponent for Tunnel {
 
             #[name(switch)]
             gtk::Switch {
-                set_active: self.active,
+                set_active: self.data.active,
                 connect_state_notify => Self::Input::Toggle,
             },
 
             gtk::Label {
-                set_label: &self.name,
+                set_label: &self.data.name,
             },
 
             gtk::Button::with_label("Remove") {
@@ -207,8 +250,13 @@ impl FactoryComponent for Tunnel {
         }
     }
 
-    fn init_model(config: Self::Init, _index: &DynamicIndex, sender: FactorySender<Self>) -> Self {
-        let mut new_self_cfg = Self::new(config);
+    fn init_model(
+        (config, saved): Self::Init,
+        _index: &DynamicIndex,
+        sender: FactorySender<Self>,
+    ) -> Self {
+        let data = TunnelData::new(config, saved);
+        let mut new_tunnel = Tunnel::new(data);
         let alert_dialog = Alert::builder()
             .launch(AlertSettings {
                 text: Some(String::from("Are you sure to remove this tunnel?")),
@@ -223,9 +271,8 @@ impl FactoryComponent for Tunnel {
                 _ => Self::Input::Ignore,
             });
 
-        new_self_cfg.alert_dialog = Some(alert_dialog);
-
-        new_self_cfg
+        new_tunnel.alert_dialog = Some(alert_dialog);
+        new_tunnel
     }
 
     fn update_with_view(
@@ -235,15 +282,46 @@ impl FactoryComponent for Tunnel {
         sender: relm4::FactorySender<Self>,
     ) {
         match msg {
+            // In the Toggle message handler:
             Self::Input::Toggle => {
-                match self.try_toggle() {
-                    Ok(_) => self.active = !self.active,
-                    Err(err) => sender
-                        .output_sender()
-                        .emit(Self::Output::Error(err.to_string())),
-                };
-                debug!("connection state: {}", self.active);
-                widgets.switch.set_state(self.active);
+                // Only validate when activating (not when deactivating)
+                if !self.data.active {
+                    if !self.data.saved {
+                        sender.output_sender().emit(TunnelOutput::Error(
+                            "You must save the configuration before activating the tunnel.".into(),
+                        ));
+                        widgets.switch.set_state(false);
+                        return;
+                    }
+
+                    if let Err(err) = self.is_cfg_valid() {
+                        sender
+                            .output_sender()
+                            .emit(TunnelOutput::Error(err.to_string()));
+                        widgets.switch.set_state(false);
+                        return;
+                    }
+                }
+                // Capture needed data before moving into async block
+                let tunnel_name = self.data.name.clone();
+                let tunnel_path = self.data.path();
+                let current_active = self.data.active;
+
+                sender.spawn_oneshot_command(move || {
+                    match Tunnel::execute_toggle(&tunnel_name, &tunnel_path) {
+                        Ok(_) => {
+                            debug!("Successfully toggled tunnel: {}", tunnel_name);
+                            TunnelCommandOutput::ToggleSuccess(!current_active)
+                        }
+                        Err(err) => {
+                            error!("Error toggling tunnel '{}': {}", tunnel_name, err);
+                            TunnelCommandOutput::ToggleError(format!(
+                                "Failed to toggle tunnel '{}': {}",
+                                tunnel_name, err
+                            ))
+                        }
+                    }
+                });
             }
             Self::Input::Remove(index) => {
                 self.pending_remove = Some(index.clone());
@@ -257,6 +335,24 @@ impl FactoryComponent for Tunnel {
             }
             Self::Input::Ignore => {
                 // Ignore the message
+            }
+        }
+    }
+    fn update_cmd_with_view(
+        &mut self,
+        widgets: &mut Self::Widgets,
+        message: Self::CommandOutput,
+        sender: FactorySender<Self>,
+    ) {
+        match message {
+            TunnelCommandOutput::ToggleSuccess(new_active_state) => {
+                self.data.active = new_active_state;
+                widgets.switch.set_state(self.data.active);
+                debug!("connection state: {}", self.data.active);
+            }
+            TunnelCommandOutput::ToggleError(err) => {
+                sender.output_sender().emit(TunnelOutput::Error(err));
+                widgets.switch.set_state(self.data.active); // Revert switch state
             }
         }
     }
