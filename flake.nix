@@ -38,7 +38,11 @@
 
         inherit (pkgs) lib;
 
-        craneLib = crane.mkLib pkgs;
+        rustToolchain = pkgs.rust-bin.stable."1.90.0".default.override {
+          extensions = [ "rust-src" "rust-analyzer" ];
+        };
+
+        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
         # FIXME: It breaks the check : "nix flake check --no-build -L --no-eval-cache --store $TMPSTORE"
         #src = craneLib.cleanCargoSource ./.;
         src = ./.;
@@ -184,6 +188,18 @@
             # Inherit inputs from checks.
             checks = self.checks.${system};
             inherit (commonArgs) buildInputs;
+
+            packages = with pkgs; [
+              # Rust toolchain
+              rustToolchain
+
+              # Development tools
+              cargo
+              rustc
+              rustfmt
+              clippy
+              rust-analyzer
+            ];
           };
         }
     )

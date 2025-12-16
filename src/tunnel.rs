@@ -154,7 +154,7 @@ impl Tunnel {
 
     /// Toggle the `WireGuard` interface using wireguard-tools.
     fn execute_toggle(name: &str, path: &Path) -> anyhow::Result<()> {
-        let run_wg_quick = |action: &str| -> Result<(), io::Error> {
+        let run_wg_quick = |action: &str| -> anyhow::Result<()> {
             let cmd_str = format!("wg-quick {} {}", action, name);
 
             let cmd = std::process::Command::new("wg-quick")
@@ -162,15 +162,15 @@ impl Tunnel {
                 .arg(path)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
-                .spawn()?;
+                .spawn()
+                .map_err(|e| anyhow::anyhow!("Failed to spawn wg-quick: {}", e))?;
+
             debug!("running cmd: {cmd_str}");
-            let (status_code, output) = wait_cmd_with_timeout(cmd, 5, Some(&cmd_str))?;
+            let (status_code, output) = wait_cmd_with_timeout(cmd, 5, Some(&cmd_str))
+                .map_err(|e| anyhow::anyhow!("Command timeout or IO error: {}", e))?;
 
             if status_code != Some(0) {
-                return Err(io::Error::other(format!(
-                    "Failed to execute wg-quick {action}: {}",
-                    output.trim()
-                )));
+                anyhow::bail!("Failed to execute wg-quick {}: {}", action, output.trim());
             }
 
             Ok(())
@@ -352,6 +352,7 @@ impl FactoryComponent for Tunnel {
                 debug!("connection state: {}", self.data.active);
             }
             TunnelCommandOutput::ToggleError(err) => {
+                trace!("Emitting TunnelOutput::Error to main app: {}", err);
                 sender.output_sender().emit(TunnelOutput::Error(err));
                 widgets.switch.set_state(self.data.active); // Revert switch state
             }
