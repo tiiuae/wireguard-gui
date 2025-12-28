@@ -58,6 +58,19 @@ impl TryFrom<HashMap<String, Option<String>>> for GenerationSettings {
     }
 }
 
+impl Default for GenerationSettings {
+    fn default() -> Self {
+        Self {
+            tunnel_iface_name: "unknown".into(),
+            // SAFETY: "10.0.0.1/24" is a valid IP address with CIDR notation
+            #[allow(clippy::unwrap_used)]
+            tunnel_iface_ip: "10.0.0.1/24".parse().unwrap(),
+            listen_port: 51820,
+            number_of_peers: 1,
+        }
+    }
+}
+
 impl GenerationSettings {
     pub fn generate(&self) -> anyhow::Result<WireguardConfig> {
         let listen_port = self.listen_port.to_string();

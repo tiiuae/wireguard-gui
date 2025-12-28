@@ -16,8 +16,8 @@ use std::collections::HashMap;
 #[derive(Debug)]
 pub struct GeneratorModel {
     fields: Controller<Fields>,
-    visible: bool,
     alert_dialog: Controller<Alert>,
+    window: gtk::ApplicationWindow,
 }
 
 #[derive(Debug)]
@@ -47,11 +47,10 @@ impl SimpleComponent for GeneratorModel {
     type Output = GeneratorOutput;
 
     view! {
-        gtk::Window {
+        gtk::ApplicationWindow {
             set_title: Some("Generator"),
-            #[watch]
-            set_visible: model.visible,
             set_deletable: false,
+            set_hide_on_close: true,
 
             gtk::Box {
                 set_orientation: gtk::Orientation::Vertical,
@@ -103,9 +102,9 @@ impl SimpleComponent for GeneratorModel {
             .forward(sender.input_sender(), |_| Self::Input::Ignore);
 
         let model = Self {
-            visible: false,
             fields,
             alert_dialog,
+            window: root.clone(),
         };
 
         let widgets = view_output!();
@@ -115,8 +114,16 @@ impl SimpleComponent for GeneratorModel {
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
         match msg {
-            Self::Input::Show => self.visible = true,
-            Self::Input::Hide => self.visible = false,
+            Self::Input::Show => {
+                self.window.present();
+                trace!("Self::Input::Show");
+                trace!("{:#?}", self.fields);
+            }
+            Self::Input::Hide => {
+                self.window.hide();
+                trace!("Self::Input::Hide");
+                trace!("{:#?}", self.fields);
+            }
             Self::Input::AskForFieldsMap => {
                 self.fields.emit(FieldsInput::Collect);
             }
@@ -125,9 +132,8 @@ impl SimpleComponent for GeneratorModel {
                     let cfg = match settings.generate() {
                         Ok(cfg) => cfg,
                         Err(e) => {
-                            sender.input(Self::Input::Error(format!(
-                                "Error generating config: {e}"
-                            )));
+                            sender
+                                .input(Self::Input::Error(format!("Error generating config: {e}")));
                             return;
                         }
                     };
@@ -141,8 +147,7 @@ impl SimpleComponent for GeneratorModel {
 
                     trace!("generated-cfg:{:#?}", cfg);
 
-                    let cfg_path =
-                        cli::get_configs_dir().join(format!("{iface_name}.conf"));
+                    let cfg_path = cli::get_configs_dir().join(format!("{iface_name}.conf"));
                     if let Err(e) = write_config_to_path(&cfg, &cfg_path) {
                         sender.input(Self::Input::Error(format!(
                             "Error writing config to file: {e}"
@@ -150,8 +155,7 @@ impl SimpleComponent for GeneratorModel {
                         return;
                     }
 
-                    if let Err(err) = sender.output(Self::Output::GeneratedHostConfig(cfg))
-                    {
+                    if let Err(err) = sender.output(Self::Output::GeneratedHostConfig(cfg)) {
                         sender.input(Self::Input::Error(format!(
                             "Failed to send GeneratedHostConfig output: {err:?}"
                         )));

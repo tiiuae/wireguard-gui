@@ -17,6 +17,13 @@ use std::rc::Rc;
 
 const DROPDOWN_NONE_INDEX: u32 = 0;
 const DROPDOWN_NONE_STR: &str = "None";
+
+#[derive(Debug)]
+pub enum TunnelStoreAction {
+    Save,
+    Export(PathBuf),
+}
+
 pub struct OverviewModel {
     interface: Interface,
     peers: FactoryVecDeque<PeerComp>,
@@ -51,7 +58,7 @@ pub enum InterfaceSetKind {
 
 #[derive(Debug)]
 pub enum OverviewInput {
-    CollectTunnel(Option<PathBuf>),
+    CollectTunnel(TunnelStoreAction),
     ShowConfig(Box<WireguardConfig>),
     RemovePeer(DynamicIndex),
     AddPeer,
@@ -68,9 +75,10 @@ pub enum OverviewInput {
 
 #[derive(Debug)]
 pub enum OverviewOutput {
-    SaveConfig(Box<WireguardConfig>, Option<PathBuf>),
+    SaveConfig(Box<WireguardConfig>, TunnelStoreAction),
     AddInitErrors(String),
     FieldsModified,
+    NameChanged(String),
     Error(String),
 }
 
@@ -351,7 +359,7 @@ impl SimpleComponent for OverviewModel {
 
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
         match msg {
-            Self::Input::CollectTunnel(path) => {
+            Self::Input::CollectTunnel(action) => {
                 let cfg = WireguardConfig {
                     interface: self.interface.clone(),
                     peers: self.peers.iter().map(|p| p.peer.clone()).collect(),
@@ -359,7 +367,7 @@ impl SimpleComponent for OverviewModel {
 
                 sender
                     .output_sender()
-                    .emit(Self::Output::SaveConfig(Box::new(cfg), path));
+                    .emit(Self::Output::SaveConfig(Box::new(cfg), action));
             }
             Self::Input::ShowConfig(config) => {
                 let WireguardConfig { interface, peers } = *config;
@@ -367,7 +375,7 @@ impl SimpleComponent for OverviewModel {
                 // Disable/Enable dropdown when script requires bind interface
                 self.binding_ifaces_enabled = self.interface.has_script_bind_iface;
                 self.replace_peers(peers);
-               // trace!("show-config: {:#?}", self.interface);
+                // trace!("show-config: {:#?}", self.interface);
             }
             Self::Input::RemovePeer(idx) => {
                 let mut peers = self.peers.guard();
@@ -483,7 +491,20 @@ impl SimpleComponent for OverviewModel {
             Self::Input::SetInterface(kind, value) => {
                 let mut is_changed = false;
                 match kind {
-                    InterfaceSetKind::Name => is_changed = self.interface.name.update(value),
+                    InterfaceSetKind::Name => {
+                        is_changed = self.interface.name.update(value.clone());
+                        trace!(
+                            "SetInterface Name: changed = {},value = {}",
+                            is_changed,
+                            value.as_deref().unwrap_or("None")
+                        );
+                        if is_changed && let Some(new_name) = value {
+                            /* it should be assigned tunnel directly to avoid "Generate Configs" conflict. */
+                            sender
+                                .output_sender()
+                                .emit(Self::Output::NameChanged(new_name));
+                        }
+                    }
                     InterfaceSetKind::Address => {
                         if let Some(ref ip) = value
                             && !utils::is_ip_valid(Some(ip))
@@ -502,20 +523,26 @@ impl SimpleComponent for OverviewModel {
                         let Some(private_key) = value.clone() else {
                             return;
                         };
-                        let public_key =
-                            match utils::generate_public_key(private_key.clone()) {
-                                Ok(k) => k,
-                                Err(e) => {
-                                    sender
-                                        .output_sender()
-                                        .emit(Self::Output::Error(e.to_string()));
-                                    return;
-                                }
-                            };
-                        sender.input(Self::Input::SetGeneratedKeys {
-                            pub_key: Some(public_key),
-                            priv_key: Some(private_key),
-                        });
+                        sender.spawn_oneshot_command(gtk::glib::clone!(
+                            #[strong]
+                            sender,
+                            move || {
+                                let public_key =
+                                    match utils::generate_public_key(private_key.clone()) {
+                                        Ok(k) => k,
+                                        Err(e) => {
+                                            sender
+                                                .output_sender()
+                                                .emit(Self::Output::Error(e.to_string()));
+                                            return;
+                                        }
+                                    };
+                                sender.input(Self::Input::SetGeneratedKeys {
+                                    pub_key: Some(public_key),
+                                    priv_key: Some(private_key),
+                                });
+                            }
+                        ));
                     }
                     InterfaceSetKind::Dns => is_changed = self.interface.dns.update(value),
                     InterfaceSetKind::Table => is_changed = self.interface.table.update(value),
