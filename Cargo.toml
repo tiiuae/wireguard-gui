@@ -24,4 +24,4 @@ lazy_static = "1.5.0"
 syslog = "7.0.0"
 pnet_datalink = "0.35.0"
 anyhow = "1.0.100"
-libadwaita = { version = "0.7", features = ["v1_2"] }
+libadwaita = { version = "0.7", features = ["v1_4"] }

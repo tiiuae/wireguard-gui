@@ -18,3 +18,5 @@ pub mod utils;
 
 /// CLI interface for the application.
 pub mod cli;
+/// Toast notification manager.
+pub mod toast;

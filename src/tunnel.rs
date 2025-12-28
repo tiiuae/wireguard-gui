@@ -27,7 +27,7 @@ pub struct Tunnel {
     pub data: TunnelData,
     pub pending_remove: Option<DynamicIndex>,
     alert_dialog: Option<Controller<Alert>>,
-    programmatic_change: bool,
+    switch_internal_changed: bool,
 }
 
 #[derive(Debug)]
@@ -64,7 +64,7 @@ impl Tunnel {
             data,
             pending_remove: None,
             alert_dialog: None,
-            programmatic_change: false,
+            switch_internal_changed: false,
         }
     }
     pub fn update_from(&mut self, other: TunnelData) {
@@ -210,12 +210,18 @@ pub enum TunnelOutput {
     Error(String),
 }
 
+#[derive(Debug)]
+pub enum TunnelCommandOutput {
+    ToggleSuccess(bool),
+    ToggleError(String),
+}
+
 #[relm4::factory(pub)]
 impl FactoryComponent for Tunnel {
     type Init = (WireguardConfig, bool);
     type Input = TunnelMsg;
     type Output = TunnelOutput;
-    type CommandOutput = ();
+    type CommandOutput = TunnelCommandOutput;
     type ParentWidget = gtk::ListBox;
 
     view! {
@@ -227,11 +233,17 @@ impl FactoryComponent for Tunnel {
 
             #[name(switch)]
             gtk::Switch {
+                #[watch]
                 set_active: self.data.active,
-                connect_state_notify => Self::Input::Toggle,
+
+                connect_state_set[sender] => move |_sw, _state| {
+                    sender.input(Self::Input::Toggle);
+                    gtk::glib::Propagation::Proceed
+                },
             },
 
             gtk::Label {
+                #[watch]
                 set_label: &self.data.name,
             },
 
@@ -278,52 +290,54 @@ impl FactoryComponent for Tunnel {
     ) {
         match msg {
             Self::Input::Toggle => {
-                trace!("entering toggle");
+                trace!("entering toggle, current data.active: {}", self.data.active);
 
-                if self.programmatic_change {
-                    self.programmatic_change = false;
+                // Ignore if this is a programmatic change
+                if self.switch_internal_changed {
+                    self.switch_internal_changed = false;
                     return;
                 }
 
+                // Validate only when activating
                 if !self.data.active {
                     if !self.data.saved {
-                        self.programmatic_change = true;
-                        sender.output_sender().emit(
-                            TunnelOutput::Error(
-                              "You must save the configuration before activating the tunnel.".into()
-                            )
-                        );
+                        sender.output_sender().emit(TunnelOutput::Error(
+                            "You must save the configuration before activating the tunnel.".into(),
+                        ));
+                        self.switch_internal_changed = true;
                         widgets.switch.set_active(false);
                         return;
                     }
 
                     if let Err(err) = self.is_cfg_valid() {
-                        self.programmatic_change = true;
-                        sender.output_sender().emit(
-                            TunnelOutput::Error(err.to_string())
-                        );
+                        sender
+                            .output_sender()
+                            .emit(TunnelOutput::Error(err.to_string()));
+                        self.switch_internal_changed = true;
                         widgets.switch.set_active(false);
                         return;
                     }
                 }
 
-                let name = &self.data.name;
-                let path = self.data.path();
+                let tunnel_name = self.data.name.clone();
+                let tunnel_path = self.data.path();
+                let current_active = self.data.active;
 
-                match Tunnel::execute_toggle(name, &path) {
-                    Ok(_) => {
-                        self.data.active = !self.data.active;
-                        self.programmatic_change = true;
-                        widgets.switch.set_active(self.data.active);
+                sender.spawn_oneshot_command(move || {
+                    match Tunnel::execute_toggle(&tunnel_name, &tunnel_path) {
+                        Ok(_) => {
+                            debug!("Successfully toggled tunnel: {}", tunnel_name);
+                            TunnelCommandOutput::ToggleSuccess(!current_active)
+                        }
+                        Err(err) => {
+                            error!("Error toggling tunnel '{}': {}", tunnel_name, err);
+                            TunnelCommandOutput::ToggleError(format!(
+                                "Failed to toggle tunnel '{}': {}",
+                                tunnel_name, err
+                            ))
+                        }
                     }
-                    Err(err) => {
-                        self.programmatic_change = true;
-                        sender.output_sender().emit(
-                            TunnelOutput::Error(err.to_string())
-                        );
-                        widgets.switch.set_active(self.data.active);
-                    }
-                }
+                });
             }
             Self::Input::Remove(index) => {
                 self.pending_remove = Some(index.clone());
@@ -337,6 +351,28 @@ impl FactoryComponent for Tunnel {
             }
             Self::Input::Ignore => {
                 // Ignore the message
+            }
+        }
+    }
+
+    fn update_cmd_with_view(
+        &mut self,
+        widgets: &mut Self::Widgets,
+        message: Self::CommandOutput,
+        sender: FactorySender<Self>,
+    ) {
+        match message {
+            TunnelCommandOutput::ToggleSuccess(new_active_state) => {
+                self.data.active = new_active_state;
+                widgets.switch.set_active(self.data.active);
+                debug!("connection state: {}", self.data.active);
+            }
+            TunnelCommandOutput::ToggleError(err) => {
+                trace!("Emitting TunnelOutput::Error to main app: {}", err);
+                sender.output_sender().emit(TunnelOutput::Error(err));
+                // revert the switch state
+                self.switch_internal_changed = true;
+                widgets.switch.set_active(self.data.active);
             }
         }
     }
