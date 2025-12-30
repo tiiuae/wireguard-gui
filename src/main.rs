@@ -6,15 +6,18 @@ use crate::gtk::gdk_pixbuf;
 use anyhow::Context;
 use gtk::prelude::*;
 use log::{debug, error, info, trace};
+use relm4::abstractions::Toaster;
 use relm4::factory::{DynamicIndex, FactoryVecDeque};
 use relm4::prelude::*;
 use relm4_components::alert::*;
 use relm4_components::open_button::{OpenButton, OpenButtonSettings};
 use relm4_components::open_dialog::OpenDialogSettings;
 use relm4_components::save_dialog::*;
+use crate::gtk::pango;
 use std::{fs, path::PathBuf};
 use syslog::{BasicLogger, Facility, Formatter3164};
 use wireguard_gui::{cli::*, config::*, generator::*, overview::*, tunnel::*, utils::*};
+
 const GHAF_LOGO: &[u8] = include_bytes!("../assets/ghaf-logo.png");
 const WG_LOGO: &[u8] = include_bytes!("../assets/wireguard-logo.png");
 struct App {
@@ -25,6 +28,7 @@ struct App {
     import_button: Controller<OpenButton>,
     alert_dialog: Controller<Alert>,
     export_dialog: Controller<SaveDialog>,
+    toaster: Toaster,
     init_err_buffer: Vec<String>,
     init_complete: bool,
     save_button_enabled: bool,
@@ -75,24 +79,32 @@ impl SimpleComponent for App {
     type Output = ();
 
     view! {
-        gtk::Window {
+        adw::Window {
             set_title: Some("Wireguard GUI"),
             set_default_size: (480, 340),
 
-            gtk::Paned {
-                set_shrink_start_child: false,
-                set_shrink_end_child: false,
-
-                #[wrap(Some)]
-                set_start_child = &gtk::Box {
+            #[local_ref]
+            toast_overlay -> adw::ToastOverlay {
+                gtk::Box {
                     set_orientation: gtk::Orientation::Vertical,
-                    set_hexpand: true,
-                    set_vexpand: true,
-                    set_spacing: 10,
-                    set_margin_start: 0,
-                    set_margin_end: 0,
-                    set_margin_top: 0,
-                    set_margin_bottom: 0,
+
+                    adw::HeaderBar {},
+
+                    gtk::Paned {
+                        set_shrink_start_child: false,
+                        set_shrink_end_child: false,
+                        set_vexpand: true,
+
+                        #[wrap(Some)]
+                        set_start_child = &gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
+                            set_hexpand: true,
+                            set_vexpand: true,
+                            set_spacing: 10,
+                            set_margin_start: 0,
+                            set_margin_end: 0,
+                            set_margin_top: 0,
+                            set_margin_bottom: 0,
 
                     // Horizontal box to hold the two logos side by side
                     gtk::Box {
@@ -189,7 +201,9 @@ impl SimpleComponent for App {
                         }
                     }
                 },
-            },
+                    }
+                }
+            }
         }
     }
 
@@ -198,6 +212,18 @@ impl SimpleComponent for App {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        // Load custom CSS for toasts
+        let css_provider = gtk::CssProvider::new();
+        css_provider.load_from_data(
+            ".error-toast { background-color: #8b0000; color: white; padding: 8px; border-radius: 6px; } \
+             .info-toast { background-color: #1e88e5; color: white; padding: 8px; border-radius: 6px; }"
+        );
+        gtk::style_context_add_provider_for_display(
+            &gtk::gdk::Display::default().expect("Could not connect to a display."),
+            &css_provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+
         let ghaf_pixbuf = pixbuf_from_bytes(GHAF_LOGO);
         let wg_pixbuf = pixbuf_from_bytes(WG_LOGO);
         let tunnels = FactoryVecDeque::builder()
@@ -208,15 +234,8 @@ impl SimpleComponent for App {
                 TunnelOutput::Error(msg) => Self::Input::Error(msg),
             });
 
-        sender.spawn_oneshot_command(gtk::glib::clone!(
-            #[strong]
-            sender,
-            move || {
-                let initial_load_cfg = perform_initial_loading();
-
-                sender.input(initial_load_cfg);
-            }
-        ));
+        let initial_load_cfg = perform_initial_loading();
+        sender.input(initial_load_cfg);
 
         let import_button = OpenButton::builder()
             .launch(OpenButtonSettings {
@@ -303,10 +322,13 @@ impl SimpleComponent for App {
             generator,
             alert_dialog,
             export_dialog,
+            toaster: Toaster::default(),
             init_err_buffer: Vec::new(),
             init_complete: false,
             save_button_enabled: false,
         };
+
+        let toast_overlay = model.toaster.overlay_widget();
 
         let tunnels_list_box = model.tunnels.widget();
 
@@ -412,38 +434,32 @@ impl SimpleComponent for App {
                 tunnels.remove(idx.current_index());
             }
             Self::Input::ImportTunnel(path) => {
-                sender.spawn_oneshot_command(gtk::glib::clone!(
-                    #[strong]
-                    sender,
-                    move || {
-                        // Read file (blocking)
-                        let content = match std::fs::read_to_string(&path) {
-                            Ok(c) => c,
-                            Err(e) => {
-                                sender.input(Self::Input::Error(format!(
-                                    "Failed to read file {}: {}",
-                                    path.display(),
-                                    e
-                                )));
-                                return;
-                            }
-                        };
-
-                        // Parse (blocking due to generate_public_key)
-                        let config = match parse_config(&content) {
-                            Ok(cfg) => cfg,
-                            Err(e) => {
-                                sender.input(Self::Input::Error(format!(
-                                    "Failed to parse config: {}",
-                                    e
-                                )));
-                                return;
-                            }
-                        };
-
-                        sender.input(Self::Input::ProcessImportedTunnel(Box::new(config), path));
+                // Read file
+                let content = match std::fs::read_to_string(&path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        sender.input(Self::Input::Error(format!(
+                            "Failed to read file {}: {}",
+                            path.display(),
+                            e
+                        )));
+                        return;
                     }
-                ));
+                };
+
+                // Parse config
+                let config = match parse_config(&content) {
+                    Ok(cfg) => cfg,
+                    Err(e) => {
+                        sender.input(Self::Input::Error(format!(
+                            "Failed to parse config: {}",
+                            e
+                        )));
+                        return;
+                    }
+                };
+
+                sender.input(Self::Input::ProcessImportedTunnel(Box::new(config), path));
             }
             Self::Input::ProcessImportedTunnel(mut config, path) => {
                 reset_interface_hooks(&mut config);
@@ -482,24 +498,18 @@ impl SimpleComponent for App {
                     return;
                 }
 
-                sender.spawn_oneshot_command(gtk::glib::clone!(
-                    #[strong]
-                    sender,
-                    move || {
-                        if let Err(e) = write_config_to_path(&config, &cfg_path) {
-                            sender.input(Self::Input::Error(format!(
-                                "Failed to write config: {}",
-                                e
-                            )));
-                            return;
-                        }
+                if let Err(e) = write_config_to_path(&config, &cfg_path) {
+                    sender.input(Self::Input::Error(format!(
+                        "Failed to write config: {}",
+                        e
+                    )));
+                    return;
+                }
 
-                        sender.input(Self::Input::AddTunnel {
-                            config,
-                            set_default: false,
-                        });
-                    }
-                ));
+                sender.input(Self::Input::AddTunnel {
+                    config,
+                    set_default: false,
+                });
             }
             Self::Input::TunnelModified => {
                 if !self.init_complete {
@@ -511,7 +521,7 @@ impl SimpleComponent for App {
                 if let Some(idx) = self.selected_tunnel_idx
                     && let Some(selected_tunnel) = self.tunnels.guard().get_mut(idx)
                 {
-                    trace!("TunnelModified- selected_tunnel:{:#?}", selected_tunnel);
+                    //trace!("TunnelModified- selected_tunnel:{:#?}", selected_tunnel);
 
                     selected_tunnel.data.saved = false;
                     self.save_button_enabled = !selected_tunnel.data.saved;
@@ -536,46 +546,40 @@ impl SimpleComponent for App {
                         return;
                     }
 
-                    sender.spawn_oneshot_command(gtk::glib::clone!(
-                        #[strong]
-                        sender,
-                        move || {
-                            /* if path is None, it is called by 'Save' function.
-                            Otherwise it is called by 'Export' function */
-                            let is_save_clicked = path.is_none();
-                            let new_tunnel_data = TunnelData::new(*config, false);
-                            let save_path = match path {
-                                Some(p) if validate_export_path(&p) => p,
-                                Some(_) => {
-                                    sender.input(Self::Input::Error(
-                                        "Config file can be exported only under 'home' directory"
-                                            .into(),
-                                    ));
-                                    return;
-                                }
-                                None => new_tunnel_data.path(),
-                            };
-
-                            info!("Saving config file to {}", save_path.display());
-
-                            if let Err(e) =
-                                write_config_to_path(&new_tunnel_data.config, &save_path)
-                            {
-                                sender.input(Self::Input::Error(e.to_string()));
-                                return;
-                            }
-                            sender.input(Self::Input::Info(format!(
-                                "Configuration saved to {}",
-                                save_path.display()
-                            )));
-
-                            sender.input(Self::Input::UpdateTunnel {
-                                idx,
-                                new_tunnel_data: Box::new(new_tunnel_data),
-                                is_save_clicked,
-                            });
+                    /* if path is None, it is called by 'Save' function.
+                    Otherwise it is called by 'Export' function */
+                    let is_save_clicked = path.is_none();
+                    let new_tunnel_data = TunnelData::new(*config, false);
+                    let save_path = match path {
+                        Some(p) if validate_export_path(&p) => p,
+                        Some(_) => {
+                            sender.input(Self::Input::Error(
+                                "Config file can be exported only under 'home' directory"
+                                    .into(),
+                            ));
+                            return;
                         }
-                    ));
+                        None => new_tunnel_data.path(),
+                    };
+
+                    info!("Saving config file to {}", save_path.display());
+
+                    if let Err(e) =
+                        write_config_to_path(&new_tunnel_data.config, &save_path)
+                    {
+                        sender.input(Self::Input::Error(e.to_string()));
+                        return;
+                    }
+                    sender.input(Self::Input::Info(format!(
+                        "Configuration saved to {}",
+                        save_path.display()
+                    )));
+
+                    sender.input(Self::Input::UpdateTunnel {
+                        idx,
+                        new_tunnel_data: Box::new(new_tunnel_data),
+                        is_save_clicked,
+                    });
                 }
             }
             Self::Input::UpdateTunnel {
@@ -615,27 +619,12 @@ impl SimpleComponent for App {
                 self.overview.emit(OverviewInput::InitIfaceBindings(b));
             }
             Self::Input::Error(msg) => {
-                self.alert_dialog
-                    .state()
-                    .get_mut()
-                    .model
-                    .settings
-                    .secondary_text = Some(msg);
-                self.alert_dialog.state().get_mut().model.settings.text =
-                    Some(String::from("Error"));
-
-                self.alert_dialog.emit(AlertMsg::Show);
+                debug!("Self::Input::Error : {msg}");
+                self.show_error_toast(&msg);
             }
             Self::Input::Info(msg) => {
-                self.alert_dialog
-                    .state()
-                    .get_mut()
-                    .model
-                    .settings
-                    .secondary_text = Some(msg);
-                self.alert_dialog.state().get_mut().model.settings.text =
-                    Some(String::from("Info"));
-                self.alert_dialog.emit(AlertMsg::Show);
+                debug!("Self::Input::Info : {msg}");
+                self.show_info_toast(&msg);
             }
             Self::Input::AddInitErrors(msg) => {
                 self.init_err_buffer.push(msg);
@@ -703,6 +692,56 @@ impl SimpleComponent for App {
             }
             Self::Input::Ignore => (),
         }
+    }
+}
+
+enum ToastType {
+    Error,
+    Info,
+}
+
+impl App {
+    fn show_toast(&self, msg: &str, toast_type: ToastType) {
+        let (icon_name, css_class, timeout, priority) = match toast_type {
+            ToastType::Error => ("dialog-error-symbolic", "error-toast", 0, adw::ToastPriority::High),
+            ToastType::Info => ("dialog-information-symbolic", "info-toast", 5, adw::ToastPriority::Normal),
+        };
+    
+        // 1) Label
+        let label = gtk::Label::new(None);
+        label.set_markup(&msg);
+        label.set_ellipsize(pango::EllipsizeMode::None);
+        label.set_wrap_mode(pango::WrapMode::Word);
+        label.set_wrap(true);
+        label.set_xalign(0.0);
+    
+        // 2) Icon
+        let image = gtk::Image::from_icon_name(icon_name);
+    
+        // 3) Horizontal box: left icon, right label
+        let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 6); // spacing: 6px
+        hbox.append(&image);
+        hbox.append(&label);
+    
+        hbox.add_css_class(css_class);
+    
+        // 4) Toast
+        let toast = adw::Toast::builder()
+            .custom_title(&hbox)
+            .timeout(timeout)
+            .priority(priority)
+            .build();
+    
+        self.toaster.add_toast(toast);
+    }
+    
+
+    fn show_error_toast(&self, msg: &str) {
+        self.show_toast(msg, ToastType::Error);
+    }
+
+    fn show_info_toast(&self, msg: &str) {
+        self.show_toast(msg, ToastType::Info);
     }
 }
 

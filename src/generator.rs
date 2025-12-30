@@ -122,55 +122,50 @@ impl SimpleComponent for GeneratorModel {
             }
             Self::Input::Generate(fields) => match GenerationSettings::try_from(fields) {
                 Ok(settings) => {
-                    sender.spawn_oneshot_command(gtk::glib::clone!(
-                        #[strong]
-                        sender,
-                        move || {
-                            let cfg = match settings.generate() {
-                                Ok(cfg) => cfg,
-                                Err(e) => {
-                                    sender.input(Self::Input::Error(format!(
-                                        "Error generating config: {e}"
-                                    )));
-                                    return;
-                                }
-                            };
-
-                            let Some(iface_name) = cfg.interface.name.as_deref() else {
-                                sender.input(Self::Input::Error(
-                                    "Interface name is missing in the generated config.".into(),
-                                ));
-                                return;
-                            };
-
-                            trace!("generated-cfg:{:#?}", cfg);
-
-                            let cfg_path =
-                                cli::get_configs_dir().join(format!("{iface_name}.conf"));
-                            if let Err(e) = write_config_to_path(&cfg, &cfg_path) {
-                                sender.input(Self::Input::Error(format!(
-                                    "Error writing config to file: {e}"
-                                )));
-                                return;
-                            }
-
-                            if let Err(err) = sender.output(Self::Output::GeneratedHostConfig(cfg))
-                            {
-                                sender.input(Self::Input::Error(format!(
-                                    "Failed to send GeneratedHostConfig output: {err:?}"
-                                )));
-                                return;
-                            }
-                            sender.input(Self::Input::Hide);
-                            //self.latest_generated_configs = Some(cfg);
+                    let cfg = match settings.generate() {
+                        Ok(cfg) => cfg,
+                        Err(e) => {
+                            sender.input(Self::Input::Error(format!(
+                                "Error generating config: {e}"
+                            )));
+                            return;
                         }
-                    ));
+                    };
+
+                    let Some(iface_name) = cfg.interface.name.as_deref() else {
+                        sender.input(Self::Input::Error(
+                            "Interface name is missing in the generated config.".into(),
+                        ));
+                        return;
+                    };
+
+                    trace!("generated-cfg:{:#?}", cfg);
+
+                    let cfg_path =
+                        cli::get_configs_dir().join(format!("{iface_name}.conf"));
+                    if let Err(e) = write_config_to_path(&cfg, &cfg_path) {
+                        sender.input(Self::Input::Error(format!(
+                            "Error writing config to file: {e}"
+                        )));
+                        return;
+                    }
+
+                    if let Err(err) = sender.output(Self::Output::GeneratedHostConfig(cfg))
+                    {
+                        sender.input(Self::Input::Error(format!(
+                            "Failed to send GeneratedHostConfig output: {err:?}"
+                        )));
+                        return;
+                    }
+                    sender.input(Self::Input::Hide);
                 }
                 Err(e) => {
                     sender.input(Self::Input::Error(e.into()));
                 }
             },
             Self::Input::Error(msg) => {
+                self.alert_dialog.emit(AlertMsg::Hide);
+
                 self.alert_dialog
                     .state()
                     .get_mut()

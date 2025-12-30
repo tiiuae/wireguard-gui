@@ -367,7 +367,7 @@ impl SimpleComponent for OverviewModel {
                 // Disable/Enable dropdown when script requires bind interface
                 self.binding_ifaces_enabled = self.interface.has_script_bind_iface;
                 self.replace_peers(peers);
-                trace!("show-config: {:#?}", self.interface);
+               // trace!("show-config: {:#?}", self.interface);
             }
             Self::Input::RemovePeer(idx) => {
                 let mut peers = self.peers.guard();
@@ -502,26 +502,20 @@ impl SimpleComponent for OverviewModel {
                         let Some(private_key) = value.clone() else {
                             return;
                         };
-                        sender.spawn_oneshot_command(gtk::glib::clone!(
-                            #[strong]
-                            sender,
-                            move || {
-                                let public_key =
-                                    match utils::generate_public_key(private_key.clone()) {
-                                        Ok(k) => k,
-                                        Err(e) => {
-                                            sender
-                                                .output_sender()
-                                                .emit(Self::Output::Error(e.to_string()));
-                                            return;
-                                        }
-                                    };
-                                sender.input(Self::Input::SetGeneratedKeys {
-                                    pub_key: Some(public_key),
-                                    priv_key: Some(private_key),
-                                });
-                            }
-                        ));
+                        let public_key =
+                            match utils::generate_public_key(private_key.clone()) {
+                                Ok(k) => k,
+                                Err(e) => {
+                                    sender
+                                        .output_sender()
+                                        .emit(Self::Output::Error(e.to_string()));
+                                    return;
+                                }
+                            };
+                        sender.input(Self::Input::SetGeneratedKeys {
+                            pub_key: Some(public_key),
+                            priv_key: Some(private_key),
+                        });
                     }
                     InterfaceSetKind::Dns => is_changed = self.interface.dns.update(value),
                     InterfaceSetKind::Table => is_changed = self.interface.table.update(value),
