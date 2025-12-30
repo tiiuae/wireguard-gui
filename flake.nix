@@ -64,6 +64,7 @@
             wireguard-tools
             glib
             gtk4
+            libadwaita
             polkit
             gsettings-desktop-schemas
           ];
