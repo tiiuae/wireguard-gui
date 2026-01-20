@@ -99,6 +99,7 @@ pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
     enum LineType {
         Section(String),
         Attribute(String, String),
+        Comment(String),
     }
 
     let lexed_lines = s
@@ -109,6 +110,8 @@ pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
         .map(|(i, l)| {
             if let Some(section) = l.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
                 Ok(LineType::Section(section.trim().into()))
+            } else if let Some(comment) = l.strip_prefix('#') {
+                Ok(LineType::Comment(comment.trim().into()))
             } else if let Some((left, right)) = l.split_once('=') {
                 Ok(LineType::Attribute(left.trim().into(), right.trim().into()))
             } else {
@@ -118,13 +121,10 @@ pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
         .collect::<Result<Vec<LineType>, String>>()?;
 
     let mut cfg = WireguardConfig::default();
-
     let mut it = lexed_lines.into_iter().peekable();
 
-    // We can be either in interface section or in peer section
     let mut is_in_interface = false;
     let mut is_in_peer = false;
-
     let mut tmp_peer = Peer::default();
 
     while let Some(l) = it.next() {
@@ -140,17 +140,42 @@ pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
                 }
                 i => return Err(format!("Unexpected interface name {i}.")),
             },
+            LineType::Comment(comment) => {
+                // Handle comment lines (# key = value or # standalone comment)
+                if let Some((key, value)) = comment.split_once('=') {
+                    let key = key.trim();
+                    let value = value.trim().to_string();
+
+                    if is_in_interface {
+                        match key {
+                            // Standard WireGuard comment attributes
+                            "Name" => cfg.interface.name = Some(value),
+                            "BindIface" => cfg.interface.binding_iface = Some(value),
+                            "RoutingScriptName" => cfg.interface.routing_script_name = Some(value),
+                            // Ignore unknown comments (Proton VPN: Bouncing, NAT-PMP, etc.)
+                            _ => {}
+                        }
+                    } else if is_in_peer && key == "Name" {
+                        tmp_peer.name = Some(value);
+                    }
+                } else if is_in_interface {
+                    // Proton VPN: "# Key for <user>" -> name
+                    if let Some(user) = comment.strip_prefix("Key for ") {
+                        cfg.interface.name = Some(user.to_string());
+                    }
+                } else if is_in_peer && tmp_peer.name.is_none() {
+                    // Proton VPN: First standalone comment after [Peer] is the server name
+                    // e.g., "# NL-FREE#241" or "# AT#133"
+                    tmp_peer.name = Some(comment.to_string());
+                }
+            }
             LineType::Attribute(key, value) => {
                 if is_in_interface {
                     match key.as_str() {
-                        "# Name" => cfg.interface.name = Some(value),
-                        "# BindIface" => cfg.interface.binding_iface = Some(value),
-                        "# RoutingScriptName" => cfg.interface.routing_script_name = Some(value),
                         "Address" => {
                             if !utils::is_ip_valid(Some(&value)) {
                                 return Err(format!("Invalid IP address {value}."));
                             }
-
                             cfg.interface.address = Some(value);
                         }
                         "ListenPort" => cfg.interface.listen_port = Some(value),
@@ -172,16 +197,15 @@ pub fn parse_config(s: &str) -> Result<WireguardConfig, String> {
                         "PreDown" => cfg.interface.pre_down = Some(value),
                         "PostDown" => cfg.interface.post_down = Some(value),
                         "FwMark" => cfg.interface.fwmark = Some(value),
-                        k => return Err(format!("Unexpected Interface configuration key {k}.")),
+                        k => return Err(format!("Unexpected Interface configuration key: {k}")),
                     }
                 } else if is_in_peer {
                     match key.as_str() {
-                        "# Name" => tmp_peer.name = Some(value),
                         "AllowedIPs" => tmp_peer.allowed_ips = Some(value),
                         "Endpoint" => tmp_peer.endpoint = Some(value),
                         "PublicKey" => tmp_peer.public_key = Some(value),
                         "PersistentKeepalive" => tmp_peer.persistent_keepalive = Some(value),
-                        k => return Err(format!("Unexpected Peer configuration key {k}.")),
+                        k => return Err(format!("Unexpected Peer configuration key: {k}")),
                     };
 
                     match it.peek() {
@@ -933,38 +957,75 @@ mod tests {
         assert!(out.contains("Endpoint = peer.example.com:51820"));
         assert!(out.contains("PersistentKeepalive = 25"));
     }
-    //     #[test]PostDown =
-    //     fn parse_write() {
-    //         const CONFIG: &str = "[Interface]
-    // # Name = node1.example.tld
-    // Address = 192.0.2.3/32
-    // ListenPort = 51820
-    // PrivateKey = localPrivateKeyAbcAbcAbc=
-    // DNS = 1.1.1.1,8.8.8.8
-    // Table = 12345
-    // MTU = 1500
-    // PreUp = /bin/example arg1 arg2 %i
-    // PostUp = /bin/example arg1 arg2 %i
-    // PreDown = /bin/example arg1 arg2 %i
-    // PostDown = /bin/example arg1 arg2 %i
+    #[test]
+    fn parses_protonvpn_1_conf() {
+        // protonvpn-1.conf
+        let proton_config = r#"[Interface]
+# Key for TII
+# Bouncing = 4
+# NAT-PMP (Port Forwarding) = off
+# VPN Accelerator = on
+Address = 10.2.0.2/32
+DNS = 10.2.0.1
 
-    // [Peer]
-    // # Name = node2-node.example.tld
-    // AllowedIPs = 192.0.2.1/24
-    // Endpoint = node1.example.tld:51820
-    // PublicKey = remotePublicKeyAbcAbcAbc=
-    // PersistentKeepalive = 25
+[Peer]
+# NL-FREE#241
+PublicKey = veNAbXSWZO0nj6duvLa6C0yzEkR/MP994IvjzoJfDxs=
+AllowedIPs = 0.0.0.0/0, ::/0
+Endpoint = 185.183.34.41:51820"#;
 
-    // [Peer]
-    // # Name = node3-node.example.tld
-    // AllowedIPs = 192.0.2.2/24
-    // Endpoint = node1.example.tld:51821
-    // PublicKey = remotePublicKeyBcdBcdBcd=
-    // PersistentKeepalive = 26
+        let cfg = parse_config(proton_config).expect("Should parse protonvpn-1.conf");
 
-    // ";
-    //         let cfg = parse_config(CONFIG).unwrap();
-    //         let s = write_config(&cfg);
-    //         assert_eq!(s, CONFIG);
-    //     }
+        // Interface
+        assert_eq!(cfg.interface.name.as_deref(), Some("TII"));
+        assert_eq!(cfg.interface.address.as_deref(), Some("10.2.0.2/32"));
+        assert_eq!(cfg.interface.dns.as_deref(), Some("10.2.0.1"));
+
+        // Peer
+        assert_eq!(cfg.peers.len(), 1);
+        let peer = &cfg.peers[0];
+        assert_eq!(peer.name.as_deref(), Some("NL-FREE#241"));
+        assert_eq!(
+            peer.public_key.as_deref(),
+            Some("veNAbXSWZO0nj6duvLa6C0yzEkR/MP994IvjzoJfDxs=")
+        );
+        assert_eq!(peer.allowed_ips.as_deref(), Some("0.0.0.0/0, ::/0"));
+        assert_eq!(peer.endpoint.as_deref(), Some("185.183.34.41:51820"));
+    }
+
+    #[test]
+    fn parses_protonvpn_2_conf() {
+        // protonvpn-2.conf (German localization)
+        let proton_config = r#"[Interface]
+# Key for ProtonG
+# Bouncing = 20
+# NetShield = 1
+# Moderates NAT = off
+# NAT-PMP (Port-Weiterleitung) = off
+# VPN-Accelerator = on
+Address = 10.2.0.2/32
+DNS = 10.2.0.1
+[Peer]
+# AT#133
+PublicKey = D2G0wjy9kRvxjXJfLCA9zglgcwMvZFMhLG+NASSzQ1k=
+AllowedIPs = 0.0.0.0/0, ::/0"#;
+
+        let cfg = parse_config(proton_config).expect("Should parse protonvpn-2.conf");
+
+        // Interface
+        assert_eq!(cfg.interface.name.as_deref(), Some("ProtonG"));
+        assert_eq!(cfg.interface.address.as_deref(), Some("10.2.0.2/32"));
+        assert_eq!(cfg.interface.dns.as_deref(), Some("10.2.0.1"));
+
+        // Peer
+        assert_eq!(cfg.peers.len(), 1);
+        let peer = &cfg.peers[0];
+        assert_eq!(peer.name.as_deref(), Some("AT#133"));
+        assert_eq!(
+            peer.public_key.as_deref(),
+            Some("D2G0wjy9kRvxjXJfLCA9zglgcwMvZFMhLG+NASSzQ1k=")
+        );
+        assert_eq!(peer.allowed_ips.as_deref(), Some("0.0.0.0/0, ::/0"));
+        assert_eq!(peer.endpoint, None);
+    }
 }
